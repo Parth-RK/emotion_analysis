@@ -49,19 +49,20 @@ Ensure you have the following installed on your system before proceeding:
 
 2. **Generate the model file**
 
-   Execut to start the model training:
+   Execute to start the model training:
+   This will generate the model file in the models/  directory.
    ```bash
    python emo.py
    ```
-   This will generate the model file in the models/  directory.
-
+   
    Execute to run the model on the input data:
+   This will run the saved model on the input data('texts' variable in the file) and print the results.
    ```bash
    python app.py
    ```
-   This will run the saved model on the input data('texts' variable in the file) and print the results.
+   
 
-3. **View Outputs**
+4. **View Outputs**
 
    Check the console or specified output directory for results such as logs, plots, or saved models.
 
