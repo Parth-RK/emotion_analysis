@@ -1,4 +1,4 @@
-# emotion_analysis
+# Emotion Analysis
 
 ## Prerequisites
 
@@ -21,10 +21,12 @@ Ensure you have the following installed on your system before proceeding:
 
    ```bash
    python -m venv venv
-   
+   ```
+   ```bash
    # On Windows
    venv\Scripts\activate
-   
+   ```
+   ```bash
    # On macOS/Linux
    source venv/bin/activate
    ```
