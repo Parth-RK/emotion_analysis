@@ -10,8 +10,8 @@ from transformers import get_linear_schedule_with_warmup, AutoTokenizer
 import config
 import dataset
 import model as model_module
-from .preprocess import clean_text
-from .engine import train_fn, eval_fn
+from preprocess import clean_text
+from engine import train_fn, eval_fn
 # -----------------------------------
 
 def run():
