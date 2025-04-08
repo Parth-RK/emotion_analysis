@@ -5,7 +5,7 @@ import os
 DATA_DIR = "data"
 # Use the full dataset path when available
 # DATA_PATH = os.path.join(DATA_DIR, "emotion_dataset_full.csv")
-DATA_PATH = os.path.join(DATA_DIR, "emotion_data_lite.csv") # Using the sample for now
+DATA_PATH = os.path.join(DATA_DIR, "emotion_data.csv") # Using the sample for now
 OUTPUT_DIR = "../models"
 MODEL_NAME = "distilbert-base-uncased" # Efficient & strong baseline
 # MODEL_NAME = "roberta-base" # Potentially higher accuracy, more resource-intensive
