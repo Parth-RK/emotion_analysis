@@ -43,31 +43,6 @@ Ensure you have the following installed on your system before proceeding:
    pip list
    ```
 
-## Running the Project
-
-1. **Set Up Any Configuration**
-   
-   If the project requires specific configurations (e.g., API keys, environment variables, or input data paths), edit the provided configuration file (if applicable) or set environment variables as needed. Refer to the project documentation for details.
-
-2. **Generate the model file**
-
-   Execute to start the model training:
-   This will generate the model file in the models/  directory.
-   ```bash
-   python emo.py
-   ```
-   
-   Execute to run the model on the input data:
-   This will run the saved model on the input data('texts' variable in the file) and print the results.
-   ```bash
-   python app.py
-   ```
-   
-
-4. **View Outputs**
-
-   Check the console or specified output directory for results such as logs, plots, or saved models.
-
 ## Additional Notes
 
 - To deactivate the virtual environment, run:
@@ -75,3 +50,10 @@ Ensure you have the following installed on your system before proceeding:
   deactivate
   ```
 
+## My Specs:
+Nvidia GeForce MX150 2GB
+Nvidia Graphics Driver 572.83
+Cuda toolkit 11.7
+Python 3.12
+Currently not able to find compatible torch version for cu117; and links with same are not working maybe due to python version.
+Will try torch-cu118
