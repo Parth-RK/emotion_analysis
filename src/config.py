@@ -17,12 +17,12 @@ BEST_MODEL_PATH = os.path.join(OUTPUT_DIR, f"{MODEL_NAME.replace('/', '_')}_best
 
 # --- Model & Training Configuration ---
 MAX_LEN = 128 # Max sequence length for tokenizer
-TRAIN_BATCH_SIZE = 32
+TRAIN_BATCH_SIZE = 64
 VALID_BATCH_SIZE = 16
 EPOCHS = 4 # Start with a few epochs, increase if needed
-LEARNING_RATE = 3e-5 # AdamW default, often good for transformers
+LEARNING_RATE = 5e-5 # AdamW default, often good for transformers
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 42 # For reproducibility
+SEED = 69 # For reproducibility
 
 # --- Emotion Mapping ---
 # Explicitly define the 13 emotions based on the prompt
