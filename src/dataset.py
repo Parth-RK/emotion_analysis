@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import Dataset
-from . import config
+from config import config
 # Assuming clean_text is now applied *before* creating the dataset instance
 # from .preprocess import clean_text # No longer needed here if pre-cleaned
 
