@@ -1,9 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 
-# --- Use standard relative import ---
-from . import config
-# -----------------------------------
+import config
 
 class EmotionDataset(Dataset):
     """

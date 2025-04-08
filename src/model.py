@@ -1,9 +1,6 @@
 import torch.nn as nn
 from transformers import AutoModel, AutoConfig
-
-# --- Use standard relative import ---
-from . import config
-# -----------------------------------
+import config
 
 class EmotionClassifier(nn.Module):
     """
