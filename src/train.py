@@ -7,7 +7,7 @@ from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
 
 # --- Use standard relative imports ---
-from . import config
+import config
 from . import dataset
 from . import model as model_module
 from .preprocess import clean_text
