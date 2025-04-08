@@ -1,7 +1,8 @@
 import pandas as pd
 import torch
+from torch.optim import AdamW
 from sklearn.model_selection import train_test_split
-from transformers import AdamW, get_linear_schedule_with_warmup, AutoTokenizer
+from transformers import get_linear_schedule_with_warmup, AutoTokenizer
 import numpy as np # For calculating warmup steps
 
 # Import project modules
