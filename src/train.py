@@ -1,27 +1,18 @@
 import pandas as pd
 import torch
-import numpy as np # Added for seeding
-import os # Added for path joining/checking
-from torch.optim import AdamW # Correct specific import
+import numpy as np
+import os
+from torch.optim import AdamW
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
 
-# --- Try/Except block for flexible imports ---
-try:
-    # Running from project root using -m flag (e.g., python -m src.train)
-    from . import config
-    from . import dataset
-    from . import model as model_module
-    from .preprocess import clean_text
-    from .engine import train_fn, eval_fn
-except ImportError:
-    # Running directly from src directory (e.g., python train.py)
-    import config
-    import dataset
-    import model as model_module
-    from preprocess import clean_text
-    from engine import train_fn, eval_fn
-# ---------------------------------------------
+# --- Use standard relative imports ---
+from . import config
+from . import dataset
+from . import model as model_module
+from .preprocess import clean_text
+from .engine import train_fn, eval_fn
+# -----------------------------------
 
 def run():
     """

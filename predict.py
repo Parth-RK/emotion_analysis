@@ -1,21 +1,15 @@
+# Standard library imports
+import os
+import argparse
+
+# Third-party imports
 import torch
 from transformers import AutoTokenizer
-import argparse
-import os
 
-# Adjust imports based on where you run the script from
-try:
-    # Running from project root (e.g., python src/predict.py ...)
-    from src import config
-    # --- Import the actual class ---
-    from src.model import EmotionClassifier
-    from src.preprocess import clean_text
-except ImportError:
-    # Running from src directory (e.g., python predict.py ...)
-    import config
-    # --- Import the actual class ---
-    from model import EmotionClassifier
-    from preprocess import clean_text
+# Local application imports - import directly from src package
+from src import config
+from src.model import EmotionClassifier
+from src.preprocess import clean_text
 
 
 def predict_emotion(text, model, tokenizer, device, max_len):

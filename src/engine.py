@@ -2,7 +2,10 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, classification_report
-from config import config
+
+# --- Use standard relative import ---
+from . import config
+# -----------------------------------
 
 # Define a max gradient norm value for clipping
 MAX_GRAD_NORM = 1.0
