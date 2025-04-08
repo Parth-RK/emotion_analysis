@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import Dataset
-from config import config
+from . import config
 # Assuming clean_text is now applied *before* creating the dataset instance
 # from .preprocess import clean_text # No longer needed here if pre-cleaned
 
@@ -28,6 +28,7 @@ class EmotionDataset(Dataset):
             # Map sentiment strings to IDs
             # Perform mapping here or ensure dataframe passed already has numeric 'label' column
             if 'sentiment' in dataframe.columns:
+                # Use the imported config object
                 self.labels = dataframe['sentiment'].map(config.EMOTION_TO_ID).values
             elif 'label' in dataframe.columns: # Allow passing dataframe with pre-mapped labels
                  self.labels = dataframe['label'].values
@@ -60,6 +61,7 @@ class EmotionDataset(Dataset):
         if self.include_labels:
             label_id = self.labels[index]
             # Ensure label ID is valid according to config
+            # Use the imported config object
             if label_id not in config.ID_TO_EMOTION:
                  raise ValueError(f"Invalid label ID '{label_id}' found at index {index}. Check EMOTION_TO_ID mapping and data.")
             item['labels'] = torch.tensor(label_id, dtype=torch.long)

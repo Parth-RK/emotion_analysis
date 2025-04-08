@@ -3,12 +3,11 @@ import torch
 from torch.optim import AdamW
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
-import numpy as np # For calculating warmup steps
 
-# Import project modules
-from config import config
-from dataset import dataset
-from model import model as model_module # Now imports the defined model
+# Import project modules using relative imports
+from . import config
+from . import dataset
+from . import model as model_module
 from .preprocess import clean_text
 from .engine import train_fn, eval_fn
 
