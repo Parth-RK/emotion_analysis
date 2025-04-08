@@ -2,7 +2,7 @@ import torch
 import os
 
 # --- Data Configuration ---
-DATA_DIR = "../data"
+DATA_DIR = "data"
 # Use the full dataset path when available
 # DATA_PATH = os.path.join(DATA_DIR, "emotion_dataset_full.csv")
 DATA_PATH = os.path.join(DATA_DIR, "emotion_data_lite2.csv") # Using the sample for now
