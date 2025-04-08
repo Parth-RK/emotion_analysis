@@ -16,7 +16,11 @@ class EmotionClassifier(nn.Module):
         self.transformer = AutoModel.from_pretrained(config.MODEL_NAME, config=model_config)
 
         # Optional: Add dropout for regularization
-        self.dropout = nn.Dropout(model_config.hidden_dropout_prob)
+        # Use model_config.dropout for DistilBert or other models that use 'dropout' attribute
+        # Fall back to a default value if neither attribute exists
+        dropout_prob = getattr(model_config, 'hidden_dropout_prob', 
+                      getattr(model_config, 'dropout', 0.1))
+        self.dropout = nn.Dropout(dropout_prob)
 
         # Define the classification layer
         # The input dimension should match the hidden size of the transformer model
