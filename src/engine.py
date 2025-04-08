@@ -4,6 +4,9 @@ from tqdm import tqdm
 from sklearn.metrics import accuracy_score, classification_report
 from . import config
 
+# Define a max gradient norm value for clipping
+MAX_GRAD_NORM = 1.0
+
 def loss_fn(outputs, targets):
     """
     Calculates the cross-entropy loss.
@@ -12,7 +15,7 @@ def loss_fn(outputs, targets):
 
 def train_fn(data_loader, model, optimizer, device, scheduler=None):
     """
-    Performs one epoch of training.
+    Performs one epoch of training with gradient clipping.
     """
     model.train()
     total_loss = 0
@@ -25,9 +28,18 @@ def train_fn(data_loader, model, optimizer, device, scheduler=None):
 
         optimizer.zero_grad()
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        # If using AutoModelForSequenceClassification, outputs might be an object:
+        # loss = outputs.loss
+        # logits = outputs.logits # Use logits for calculating metrics if needed
+        # However, calculating loss directly often works too.
         loss = loss_fn(outputs, labels)
         total_loss += loss.item()
         loss.backward()
+
+        # --- Gradient Clipping ---
+        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+        # -----------------------
+
         optimizer.step()
         if scheduler:
             scheduler.step()
@@ -54,9 +66,12 @@ def eval_fn(data_loader, model, device):
             labels = batch["labels"].to(device)
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            loss = loss_fn(outputs, labels)
+            # If using AutoModelForSequenceClassification, outputs might be an object:
+            # logits = outputs.logits
+            # loss = loss_fn(logits, labels) # Calculate loss if not directly available
+            loss = loss_fn(outputs, labels) # Assumes outputs are logits
             total_loss += loss.item()
-            preds = torch.argmax(outputs, dim=1)
+            preds = torch.argmax(outputs, dim=1) # Assumes outputs are logits
 
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
@@ -65,37 +80,16 @@ def eval_fn(data_loader, model, device):
 
     avg_loss = total_loss / len(data_loader)
     accuracy = accuracy_score(all_labels, all_preds)
-    report = classification_report(all_labels, all_preds, target_names=config.EMOTIONS, zero_division=0, output_dict=True)
+    # Use output_dict=True for easier access to metrics
+    report_dict = classification_report(all_labels, all_preds, target_names=config.EMOTIONS, zero_division=0, output_dict=True)
+    # Generate the formatted string report as well
+    report_str = classification_report(all_labels, all_preds, target_names=config.EMOTIONS, zero_division=0)
+
 
     print(f"\nValidation Loss: {avg_loss:.4f}")
     print(f"Validation Accuracy: {accuracy:.4f}")
     print("Validation Classification Report:")
-    print("{:<12} {:<10} {:<10} {:<10} {:<10}".format("Emotion", "Precision", "Recall", "F1-Score", "Support"))
-    print("-" * 55)
-    for emotion in config.EMOTIONS:
-        metrics = report.get(emotion, {})
-        print("{:<12} {:<10.3f} {:<10.3f} {:<10.3f} {:<10}".format(
-            emotion,
-            metrics.get('precision', 0),
-            metrics.get('recall', 0),
-            metrics.get('f1-score', 0),
-            metrics.get('support', 0)
-        ))
-    print("-" * 55)
-    print("{:<12} {:<10.3f} {:<10.3f} {:<10.3f} {:<10}".format(
-        "macro avg",
-        report['macro avg']['precision'],
-        report['macro avg']['recall'],
-        report['macro avg']['f1-score'],
-        report['macro avg']['support']
-    ))
-    print("{:<12} {:<10.3f} {:<10.3f} {:<10.3f} {:<10}".format(
-        "weighted avg",
-        report['weighted avg']['precision'],
-        report['weighted avg']['recall'],
-        report['weighted avg']['f1-score'],
-        report['weighted avg']['support']
-    ))
-    print("-" * 55)
+    print(report_str) # Print the nicely formatted report directly
 
-    return avg_loss, accuracy, report
+    # Return the dictionary version for potential programmatic use
+    return avg_loss, accuracy, report_dict
