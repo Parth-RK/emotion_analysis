@@ -5,7 +5,7 @@ import os
 DATA_DIR = "data"
 # Use the full dataset path when available
 # DATA_PATH = os.path.join(DATA_DIR, "emotion_dataset_full.csv")
-DATA_PATH = os.path.join(DATA_DIR, "emotion_data_lite2.csv") # Using the sample for now
+DATA_PATH = os.path.join(DATA_DIR, "emotion_data.csv") # Using the sample for now
 OUTPUT_DIR = "models"
 MODEL_NAME = "distilbert-base-uncased" # Efficient & strong baseline
 # MODEL_NAME = "roberta-base" # Potentially higher accuracy, more resource-intensive
@@ -19,10 +19,10 @@ BEST_MODEL_PATH = os.path.join(OUTPUT_DIR, f"{MODEL_NAME.replace('/', '_')}_best
 MAX_LEN = 128 # Max sequence length for tokenizer
 TRAIN_BATCH_SIZE = 64
 VALID_BATCH_SIZE = 16
-EPOCHS = 4 # Start with a few epochs, increase if needed
-LEARNING_RATE = 5e-5 # AdamW default, often good for transformers
+EPOCHS = 10 # Start with a few epochs, increase if needed
+LEARNING_RATE = 5e-4 # AdamW default, often good for transformers
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 69 # For reproducibility
+SEED = 6090 # For reproducibility
 
 # --- Emotion Mapping ---
 # Explicitly define the 13 emotions based on the prompt

@@ -2,7 +2,8 @@ import tensorflow as tf
 import cupy as cp
 import torch
 import time
-import numpy as np
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 # Matrix size for the comparison
 MATRIX_SIZE = 3000
@@ -27,6 +28,7 @@ print("="*50)
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"CUDA version: {torch.version.cuda}")
+print("cuDNN version:", torch.backends.cudnn.version())
 if torch.cuda.is_available():
     device_name = torch.cuda.get_device_name(0)
     print(f"Device: {device_name}")

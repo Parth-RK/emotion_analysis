@@ -20,7 +20,7 @@ Ensure you have the following installed on your system before proceeding:
 2. **Create a Conda Environment** (Optional but recommended)
 
    ```bash
-   conda create -n emotion_env python=3.12
+   conda create -n emotion_env python=3.10
    ```
    ```bash
    # Activate the conda environment
@@ -50,9 +50,9 @@ Ensure you have the following installed on your system before proceeding:
 -Nvidia GeForce MX150 2GB
 -Nvidia Graphics Driver 572.83
 -Cuda toolkit 11.7
--Python 3.12
--PyTorch version: 2.6.0+cu118 
+-Python 3.10.0
+-PyTorch version: 2.6.0+cu118
 ```bash 
 pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
--Tensorflow 2.12 (Works with cu117 but not with python312)
+-cupy-cuda11x
