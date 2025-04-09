@@ -5,7 +5,7 @@
 Ensure you have the following installed on your system before proceeding:
 
 - Python (>= 3.7)
-- pip (Python package manager)
+- Anaconda or Miniconda
 - A compatible IDE or text editor (optional but recommended, e.g., VS Code or PyCharm)
 
 ## Setup Instructions
@@ -17,18 +17,14 @@ Ensure you have the following installed on your system before proceeding:
    cd emotion_analysis
    ```
 
-2. **Create a Virtual Environment** (Optional but recommended)
+2. **Create a Conda Environment** (Optional but recommended)
 
    ```bash
-   python -m venv venv
+   conda create -n emotion_env python=3.12
    ```
    ```bash
-   # On Windows
-   venv\Scripts\activate
-   ```
-   ```bash
-   # On macOS/Linux
-   source venv/bin/activate
+   # Activate the conda environment
+   conda activate emotion_env
    ```
 
 3. **Install Dependencies**
@@ -45,9 +41,9 @@ Ensure you have the following installed on your system before proceeding:
 
 ## Additional Notes
 
-- To deactivate the virtual environment, run:
+- To deactivate the conda environment, run:
   ```bash
-  deactivate
+  conda deactivate
   ```
 
 ## My Specs:
@@ -55,5 +51,5 @@ Nvidia GeForce MX150 2GB
 Nvidia Graphics Driver 572.83
 Cuda toolkit 11.7
 Python 3.12
-Currently not able to find compatible torch version for cu117; and links with same are not working maybe due to python version.
-Will try torch-cu118
+PyTorch version: 2.6.0+cu118
+Tensorflow 2.12 (Works with cu117 but not with python312)

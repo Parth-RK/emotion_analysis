@@ -1,7 +1,6 @@
 import pandas as pd
 import torch
 import numpy as np
-import os
 from torch.optim import AdamW
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
@@ -28,8 +27,8 @@ def run():
     df = pd.read_csv(config.DATA_PATH)
     print(f"Original dataset shape: {df.shape}")
     # Handle potential NaNs more explicitly if needed (e.g., inspect rows)
-    df = df.dropna(subset=['content', 'sentiment']).reset_index(drop=True)
-    print(f"Shape after dropping NaNs in 'content' or 'sentiment': {df.shape}")
+    df = df.dropna(subset=['content', 'emotion']).reset_index(drop=True)
+    print(f"Shape after dropping NaNs in 'content' or 'emotion': {df.shape}")
 
     # --- Apply text cleaning *before* splitting ---
     print("Applying text cleaning...")
@@ -39,14 +38,14 @@ def run():
 
     # Map labels to IDs
     # Check if all sentiments are in our defined map
-    unknown_sentiments = df[~df['sentiment'].isin(config.EMOTION_TO_ID.keys())]['sentiment'].unique()
+    unknown_sentiments = df[~df['emotion'].isin(config.EMOTION_TO_ID.keys())]['emotion'].unique()
     if len(unknown_sentiments) > 0:
         print(f"Warning: Found sentiments in data not in EMOTION_TO_ID mapping: {unknown_sentiments}")
         # Option: Filter out these rows or add them to the mapping
-        df = df[df['sentiment'].isin(config.EMOTION_TO_ID.keys())]
+        df = df[df['emotion'].isin(config.EMOTION_TO_ID.keys())]
         print(f"Shape after removing unknown sentiments: {df.shape}")
 
-    df['label'] = df['sentiment'].map(config.EMOTION_TO_ID)
+    df['label'] = df['emotion'].map(config.EMOTION_TO_ID)
 
     print(f"Value counts per emotion label:\n{df['label'].value_counts(normalize=True)}") # Use normalize=True for proportions
 
