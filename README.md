@@ -47,12 +47,12 @@ Ensure you have the following installed on your system before proceeding:
   ```
 
 ## My Specs:
--Nvidia GeForce MX150 2GB
--Nvidia Graphics Driver 572.83
--Cuda toolkit 11.7
--Python 3.10.0
--PyTorch version: 2.6.0+cu118
+- Nvidia GeForce MX150 2GB
+- Nvidia Graphics Driver 572.83
+- Cuda toolkit 11.7
+- Python 3.10.0
+- PyTorch version: 2.6.0+cu118
 ```bash 
 pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
--cupy-cuda11x
+- cupy-cuda11x
