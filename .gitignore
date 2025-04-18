@@ -1,4 +1,7 @@
-venv/
-models/
 __pycache__/
-*.pyc
+.vscode/
+models/
+venv/
+vocab.json
+*.pt
+*.bin
