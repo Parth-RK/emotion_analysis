@@ -1,3 +1,6 @@
+# Don't change this file after running main.py if you want to run app.py afterwards.
+# You need to have exactly the same config.py file to run the model as it was trained with.
+
 import torch
 import os
 
@@ -9,7 +12,7 @@ TEST_PATH = os.path.join(DATA_DIR, "test.csv")
 ARTIFACTS_DIR = "artifacts"
 MODEL_SAVE_PATH = os.path.join(ARTIFACTS_DIR, "emotion_model.pt")
 VOCAB_SAVE_PATH = os.path.join(ARTIFACTS_DIR, "vocab.json")
-LABEL_MAP_SAVE_PATH = os.path.join(ARTIFACTS_DIR, "label_map.json")
+LABEL_MAP_PATH = os.path.join(ARTIFACTS_DIR, "label_map.json")
 PREPROCESSOR_SAVE_PATH = os.path.join(ARTIFACTS_DIR, "preprocessor_config.json")
 RESULTS_PLOT_PATH = os.path.join(ARTIFACTS_DIR, "training_plots.png")
 
@@ -33,7 +36,7 @@ N_LAYERS = 2
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 16
-EPOCHS = 5
+EPOCHS = 7
 LEARNING_RATE_LSTM = 0.005
 SHUFFLE_DATA = True
 

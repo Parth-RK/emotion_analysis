@@ -1,18 +1,8 @@
 {
-    "label_to_int": {
-        "0": 0,
-        "1": 1,
-        "2": 2,
-        "3": 3,
-        "4": 4,
-        "5": 5
-    },
-    "int_to_label": {
-        "0": "sadness",
-        "1": "joy",
-        "2": "love",
-        "3": "anger",
-        "4": "fear",
-        "5": "surprise"
-    }
+    "0": "sadness",
+    "1": "joy",
+    "2": "love",
+    "3": "anger",
+    "4": "fear",
+    "5": "surprise"
 }

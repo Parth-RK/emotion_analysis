@@ -1,13 +1,10 @@
 import torch
-import torch.nn as nn
 import pandas as pd
 import matplotlib.pylab as plt
 import seaborn as sns
 import os
 from tqdm import tqdm
-import config
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix, classification_report
-import numpy as np
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
 def accuracy_fn(y_true, y_pred):
     correct = torch.eq(y_true, y_pred).sum().item()
@@ -15,7 +12,6 @@ def accuracy_fn(y_true, y_pred):
     return acc
 
 def evaluate(model, data_loader, criterion, device):
-    print("Evaluating...")
     total_loss, total_acc = 0, 0
     model.eval()
     with torch.inference_mode():
@@ -31,7 +27,6 @@ def evaluate(model, data_loader, criterion, device):
 
     avg_acc = total_acc / len(data_loader)
     avg_loss = total_loss / len(data_loader)
-    print(f"Evaluation Complete - Avg Loss: {avg_loss:.5f}, Avg Accuracy: {avg_acc:.2f}%")
     return avg_acc, avg_loss
 
 def trainer(model, train_loader, optimizer, criterion, epochs, device, val_loader=None, model_save_path=None):
@@ -173,9 +168,7 @@ def plot_history(df, save_path=None):
     plt.show()
 
 def generate_test_report(model, data_loader, criterion, device, int_to_label_map, report_save_path=None, conf_matrix_save_path=None):
-    """Evaluates the model on the test set and generates a report."""
     print("\n--- Generating Final Test Report ---")
-    # Get predictions and true labels
     model.eval()
     all_preds = []
     all_labels = []
