@@ -34,8 +34,7 @@ STRATIFY_SPLIT = True
 
 # --- Artifacts & Output ---
 ARTIFACTS_DIR = "artifacts"
-# Fixed artifact directory based on MODEL_TYPE
-MODEL_TYPE_ARTIFACTS_DIR = os.path.join(ARTIFACTS_DIR, MODEL_TYPE) # e.g., artifacts/Transformer
+MODEL_TYPE_ARTIFACTS_DIR = os.path.join(ARTIFACTS_DIR, MODEL_TYPE)
 MODEL_SAVE_DIR = os.path.join(MODEL_TYPE_ARTIFACTS_DIR, "model")
 BEST_MODEL_FILENAME = "best_model.pt"
 BEST_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, BEST_MODEL_FILENAME)
@@ -62,7 +61,6 @@ os.makedirs(ARTIFACTS_DIR, exist_ok=True) # For global label map
 # --- Preprocessing ---
 # Basic cleaner is generally sufficient for Transformers
 PREPROCESSOR_TYPE = 'basic'
-# Removed Spacy/NLTK related settings (SPACY_MODEL_NAME, REMOVE_STOPWORDS)
 
 # --- Transformer Model Specific ---
 # TRANSFORMER_MODEL_NAME = "distilbert-base-uncased" # OR
@@ -76,10 +74,10 @@ VALID_BATCH_SIZE = 64
 EPOCHS = 4
 LEARNING_RATE = 2e-5
 WEIGHT_DECAY = 0.01
-OPTIMIZER_TYPE = 'AdamW' # Good default for Transformers
-SCHEDULER_TYPE = 'linear_warmup' # Common for Transformers
+OPTIMIZER_TYPE = 'AdamW'
+SCHEDULER_TYPE = 'linear_warmup'
 WARMUP_PROPORTION = 0.1
-GRADIENT_CLIP_VALUE = 1.0 # Can be useful
+GRADIENT_CLIP_VALUE = 1.0
 
 # --- Evaluation & Plotting ---
 PLOT_TRAINING_HISTORY = True
