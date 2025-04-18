@@ -1,310 +1,342 @@
+import warnings
+warnings.filterwarnings("ignore")
+
+import os
+import spacy
 import torch
+import torch.nn as nn
 import pandas as pd
 import numpy as np
 import json
-import os
-import re
-from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
-from tqdm.auto import tqdm
-import sys
-import pandas.api.types as ptypes
-try:
-    from transformers import AutoTokenizer
-except ImportError:
-    print("ERROR: HuggingFace Transformers library not installed.")
-    print("       Please install it: pip install transformers")
-    sys.exit(1)
+from nltk.corpus import stopwords as nltk_stopwords
+from torch.utils.data import Dataset
+from collections import Counter
+from tqdm import tqdm
 import config
-class BasicTextCleaner:
-    def clean(self, text):
+import pandas.api.types as ptypes
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+
+PAD_IDX = config.PAD_IDX
+UNK_IDX = config.UNK_IDX
+SOS_IDX = config.SOS_IDX
+EOS_IDX = config.EOS_IDX
+
+SPACY_MODEL = config.SPACY_MODEL
+
+class Vocabulary:
+    def __init__(self, freq_threshold, max_size=None):
+        self.itos = {PAD_IDX: config.PAD_TOKEN, UNK_IDX: config.UNK_TOKEN,
+                     SOS_IDX: config.SOS_TOKEN, EOS_IDX: config.EOS_TOKEN}
+        self.stoi = {v: k for k, v in self.itos.items()}
+        self.freq_threshold = freq_threshold
+        self.max_size = max_size
+
+    def __len__(self):
+        return len(self.itos)
+
+    def build_vocabulary(self, sentence_list):
+        print("Building vocabulary...")
+        frequencies = Counter()
+        idx = len(self.itos)
+
+        for sentence in tqdm(sentence_list, desc="Counting Frequencies"):
+            frequencies.update(sentence)
+
+        if self.max_size is not None:
+            limited_freq = frequencies.most_common(self.max_size - len(self.itos))
+            frequencies = Counter(dict(limited_freq))
+
+        for word, freq in tqdm(frequencies.items(), desc="Creating Mappings"):
+            if freq >= self.freq_threshold:
+                self.stoi[word] = idx
+                self.itos[idx] = word
+                idx += 1
+        print(f"Vocabulary built. Size: {len(self.itos)}")
+
+    def numericalize(self, text_tokens):
+        return [self.stoi.get(token, UNK_IDX) for token in text_tokens]
+
+    def save(self, filepath, n_class):
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        save_data = {
+            'stoi': self.stoi,
+            'freq_threshold': self.freq_threshold,
+            'n_class': n_class
+        }
+        with open(filepath, 'w') as f:
+            json.dump(save_data, f)
+        print(f"Vocabulary (stoi) and n_class saved to {filepath}")
+
+    @classmethod
+    def load(cls, filepath):
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Vocabulary file not found at {filepath}")
+        with open(filepath, 'r') as f:
+            loaded_data = json.load(f)
+
+        stoi_loaded = loaded_data['stoi']
+        freq_threshold = loaded_data.get('freq_threshold', config.MIN_FREQ)
+        n_class = loaded_data.get('n_class')
+        if n_class is None:
+             raise ValueError("Number of classes (n_class) not found in vocabulary file.")
+
+        vocab = cls(freq_threshold)
+        itos_rebuilt = {}
+        stoi_rebuilt = {}
+        special_tokens = {config.PAD_TOKEN, config.UNK_TOKEN, config.SOS_TOKEN, config.EOS_TOKEN}
+        for token, index_str in stoi_loaded.items():
+            index = int(index_str)
+            itos_rebuilt[index] = token
+            stoi_rebuilt[token] = index
+            
+        vocab.itos = itos_rebuilt
+        vocab.stoi = stoi_rebuilt
+
+        print(f"Vocabulary loaded from {filepath}. Size: {len(vocab.itos)}, n_class: {n_class}")
+        return vocab, n_class
+
+class TextPreprocessor:
+    def __init__(self, use_stopwords=False):
+        self.nlp = None
+        self.stopwords = set(nltk_stopwords.words('english')) if use_stopwords else set()
+        self._lazy_load_spacy()
+        print(f"TextPreprocessor initialized. Stopwords {'enabled' if use_stopwords else 'disabled'}.")
+        print("Dependency parser is ENABLED for negation handling.")
+
+    def _lazy_load_spacy(self):
+        if self.nlp is None:
+            print(f"Loading spaCy model '{SPACY_MODEL}'...")
+            try:
+                self.nlp = spacy.load(SPACY_MODEL, disable=["ner"])
+            except OSError:
+                print(f"Spacy model '{SPACY_MODEL}' not found. Downloading...")
+                spacy.cli.download(SPACY_MODEL)
+                self.nlp = spacy.load(SPACY_MODEL, disable=["ner"])
+            print("spaCy model loaded (with parser).")
+
+    def clean_and_tokenize(self, text):
         text = str(text).lower()
-        text = re.sub(r'@\w+', '', text)
-        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-    def preprocess_batch(self, texts):
-        return [self.clean(text) for text in tqdm(texts, desc="Cleaning Text")]
-def to_native_type(item):
-    if isinstance(item, np.integer): return int(item)
-    elif isinstance(item, np.floating): return float(item)
-    elif isinstance(item, np.ndarray): return item.tolist()
-    elif isinstance(item, np.bool_): return bool(item)
-    elif isinstance(item, (pd.Timestamp, pd.Timedelta)): return str(item)
-    return item
-def save_label_mappings(label_to_int, int_to_label, filepath=config.LABEL_MAP_PATH):
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    try:
-        label_to_int_serializable = {str(k): to_native_type(v) for k, v in label_to_int.items()}
-        int_to_label_serializable = {str(k): to_native_type(v) for k, v in int_to_label.items()}
-    except Exception as e:
-         print(f"Error converting label map items for serialization: {e}")
-         label_to_int_serializable = {str(k): str(v) for k, v in label_to_int.items()}
-         int_to_label_serializable = {str(k): str(v) for k, v in int_to_label.items()}
-    save_data = {'label_to_int': label_to_int_serializable, 'int_to_label': int_to_label_serializable}
-    try:
-        with open(filepath, 'w', encoding='utf-8') as f: json.dump(save_data, f, indent=4, ensure_ascii=False)
-        print(f"Label mappings saved to {filepath}")
-    except Exception as e: print(f"Error saving label mappings: {e}")
-def load_label_mappings(filepath=config.LABEL_MAP_PATH):
-    if not os.path.exists(filepath):
-        print(f"Label mapping file not found at {filepath}. Returning None.")
-        return None, None
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f: loaded_data = json.load(f)
-        label_to_int = loaded_data.get('label_to_int', {})
-        int_to_label_str_keys = loaded_data.get('int_to_label', {})
-        int_to_label = {}
-        for k, v in int_to_label_str_keys.items():
-            try: int_to_label[int(k)] = v
-            except ValueError: print(f"Warning: Skipping non-integer key '{k}' in int_to_label map from {filepath}")
-        if not label_to_int or not int_to_label:
-             print(f"Warning: Loaded label map from {filepath} seems incomplete or empty.")
-             return None, None
-        print(f"Label mappings loaded from {filepath}. Num classes: {len(int_to_label)}")
-        return label_to_int, int_to_label
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from {filepath}. File might be corrupted.")
-        return None, None
-    except Exception as e:
-        print(f"Error loading label mappings from {filepath}: {e}")
-        return None, None
-def load_raw_data(filepath, file_format=config.INPUT_FILE_FORMAT, text_col_idx=config.TEXT_COLUMN_INDEX,
-                  label_col_idx=config.LABEL_COLUMN_INDEX, col_names=config.COLUMN_NAMES, has_header=config.HAS_HEADER):
-    print(f"Attempting to load raw data from: {filepath} (Format: {file_format})")
-    if not filepath or not os.path.exists(filepath):
-         print(f"Warning: Data file not found or path is invalid: {filepath}")
-         return None
-    try:
-        read_opts = {'on_bad_lines': 'warn', 'low_memory': False}
-        if file_format == "csv":
-            header = 0 if has_header else None
-            names = None if has_header else col_names
-            df = pd.read_csv(filepath, header=header, names=names, **read_opts)
-        elif file_format == "tsv":
-            header = 0 if has_header else None
-            names = None if has_header else col_names
-            df = pd.read_csv(filepath, sep='\t', header=header, names=names, **read_opts)
-        elif file_format == "jsonl":
-            df = pd.read_json(filepath, lines=True)
-            if col_names is None: col_names = ['text', 'label']
-            has_header = False
-        else: raise ValueError(f"Unsupported file format: {file_format}")
-        num_cols = len(df.columns)
-        if label_col_idx >= num_cols or text_col_idx >= num_cols:
-             raise IndexError(f"Column index out of bounds (Label: {label_col_idx}, Text: {text_col_idx}). File '{os.path.basename(filepath)}' has {num_cols} columns: {list(df.columns)}")
-        label_col_name = df.columns[label_col_idx]
-        text_col_name = df.columns[text_col_idx]
-        print(f"  Using columns - Label: '{label_col_name}' (Index {label_col_idx}), Text: '{text_col_name}' (Index {text_col_idx})")
-        df_std = pd.DataFrame({'label': df[label_col_name], 'text': df[text_col_name]})
-        original_rows = len(df_std)
-        df_std = df_std.dropna(subset=['label', 'text']).reset_index(drop=True)
-        rows_dropped = original_rows - len(df_std)
-        if rows_dropped > 0: print(f"  Dropped {rows_dropped} rows with NaN values in 'label' or 'text' columns.")
-        df_std['text'] = df_std['text'].astype(str)
-        print(f"  Successfully loaded {len(df_std)} rows from {os.path.basename(filepath)}.")
-        return df_std
-    except FileNotFoundError:
-        print(f"Error: Data file somehow not found at {filepath} despite existence check.")
-        return None
-    except IndexError as e:
-         print(f"Error: Problem accessing columns by index in {filepath}. Check indices/config. Details: {e}")
-         return None
-    except Exception as e:
-        print(f"An unexpected error occurred loading {filepath}: {e}")
-        import traceback; traceback.print_exc(); return None
-def prepare_data(df_train, df_val, df_test):
-    print("\n--- Preparing Labels ---")
-    label_col = 'label'
-    try:
-        df_train[label_col] = df_train[label_col].astype(str)
-        if df_val is not None: df_val[label_col] = df_val[label_col].astype(str)
-        if df_test is not None: df_test[label_col] = df_test[label_col].astype(str)
-    except Exception as e: print(f"Warning: Could not convert label column to string. Error: {e}")
-    label_to_int, int_to_label = load_label_mappings()
-    n_classes = None
-    if label_to_int and int_to_label:
-        print(f"Using pre-loaded label map from {config.LABEL_MAP_PATH}")
-        n_classes = len(int_to_label)
-        print(f"Applying loaded mapping ({n_classes} classes)...")
-        for df_name, df in [('Train', df_train), ('Validation', df_val), ('Test', df_test)]:
-            if df is None: continue
-            df['label_int'] = df[label_col].map(label_to_int)
-            unmapped_mask = df['label_int'].isnull()
-            if unmapped_mask.any():
-                unmapped_labels = set(df.loc[unmapped_mask, label_col].unique())
-                print(f"Warning ({df_name}): Found labels not in loaded map: {unmapped_labels}. Dropping {unmapped_mask.sum()} rows.")
-                df.dropna(subset=['label_int'], inplace=True)
-            df[label_col] = df['label_int'].astype(int)
-            df.drop(columns=['label_int'], inplace=True)
-    else:
-        print("No pre-loaded label map found or map invalid. Creating new mappings from training data.")
-        unique_train_labels = sorted(df_train[label_col].unique())
-        label_to_int = {label: i for i, label in enumerate(unique_train_labels)}
-        int_to_label = {i: label for label, i in label_to_int.items()}
-        n_classes = len(label_to_int)
-        print(f"Created mapping for {n_classes} labels: {unique_train_labels}")
-        for df_name, df in [('Train', df_train), ('Validation', df_val), ('Test', df_test)]:
-             if df is None: continue
-             df['label_int'] = df[label_col].map(label_to_int)
-             unmapped_mask = df['label_int'].isnull()
-             if unmapped_mask.any():
-                 unmapped_labels = set(df.loc[unmapped_mask, label_col].unique())
-                 print(f"Warning ({df_name}): Found labels not present in training data: {unmapped_labels}. Dropping {unmapped_mask.sum()} rows.")
-                 df.dropna(subset=['label_int'], inplace=True)
-             df[label_col] = df['label_int'].astype(int)
-             df.drop(columns=['label_int'], inplace=True)
-        save_label_mappings(label_to_int, int_to_label)
-    if n_classes is None: raise ValueError("Could not determine the number of classes.")
-    print(f"\nLabel preparation complete. Determined {n_classes} classes.")
-    print(f"Final int_to_label mapping: {int_to_label}")
-    df_train.dropna(subset=['label', 'text'], inplace=True)
-    if df_val is not None: df_val.dropna(subset=['label', 'text'], inplace=True)
-    if df_test is not None: df_test.dropna(subset=['label', 'text'], inplace=True)
-    print(f"Final dataset sizes - Train: {len(df_train)}, Val: {len(df_val) if df_val is not None else 0}, Test: {len(df_test) if df_test is not None else 0}")
-    return df_train, df_val, df_test, label_to_int, int_to_label, n_classes
-class TransformerDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_len=config.MAX_LEN):
-        self.texts = texts
+        doc = self.nlp(text)
+        tokens = []
+        negated_indices = set()
+
+        for token in doc:
+            if token.dep_ == 'neg':
+                head = token.head
+                negated_indices.add(head.i)
+
+        for token in doc:
+            is_negated = token.i in negated_indices
+            if (not token.is_stop and        # spaCy's default stop words
+                not token.is_punct and       # Punctuation
+                not token.is_space and       # Whitespace tokens
+                token.lemma_ not in self.stopwords):
+
+                lemma = token.lemma_
+                if is_negated:
+                    lemma += "_NEG"
+                tokens.append(lemma)
+
+        return tokens
+
+    def preprocess_dataframe(self, df, text_column='text'):
+        if text_column not in df.columns:
+             raise ValueError(f"Input DataFrame must contain a '{text_column}' column.")
+        df[text_column] = df[text_column].fillna('')
+
+        print(f"Preprocessing DataFrame column '{text_column}'...")
+        processed_texts = [self.clean_and_tokenize(text) for text in tqdm(df[text_column], desc="Processing Texts")]
+        print("Preprocessing Done!")
+        return processed_texts
+
+class EmotionDataset(Dataset):
+    def __init__(self, sequences, labels):
+        self.sequences = sequences
         self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        if not isinstance(self.texts, list) or not isinstance(self.labels, (list, np.ndarray, pd.Series)):
-             raise TypeError("Inputs 'texts' and 'labels' must be lists or similar sequence types.")
-        if len(self.texts) != len(self.labels):
-            raise ValueError(f"Length mismatch: texts ({len(self.texts)}) vs labels ({len(self.labels)}).")
-        if self.tokenizer is None:
-             raise ValueError("TransformerDataset requires a HuggingFace tokenizer.")
-        if isinstance(self.labels, pd.Series):
-             self.labels = self.labels.values
+        if len(self.sequences) != len(self.labels):
+             raise ValueError("Sequences and labels must have the same length!")
+
     def __len__(self):
         return len(self.labels)
-    def __getitem__(self, index):
-        text = str(self.texts[index])
-        label_int = int(self.labels[index])
-        label = torch.tensor(label_int, dtype=torch.long)
-        encoding = self.tokenizer.encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_len,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
-        )
-        return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': label
-        }
-def create_dataloaders(train_data, val_data, test_data,
-                       batch_size=config.TRAIN_BATCH_SIZE, val_batch_size=config.VALID_BATCH_SIZE):
-    collate_fn = None
-    num_workers = 0
-    train_loader = DataLoader(
-        train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-        collate_fn=collate_fn, pin_memory=True if config.DEVICE == "cuda" else False
-    ) if train_data else None
-    val_loader = DataLoader(
-        val_data, batch_size=val_batch_size, shuffle=False, num_workers=num_workers,
-        collate_fn=collate_fn, pin_memory=True if config.DEVICE == "cuda" else False
-    ) if val_data else None
-    test_loader = DataLoader(
-        test_data, batch_size=val_batch_size, shuffle=False, num_workers=num_workers,
-        collate_fn=collate_fn, pin_memory=True if config.DEVICE == "cuda" else False
-    ) if test_data else None
-    if train_loader:
-        print(f"\nDataLoaders created (Batch Size: Train={batch_size}, Val/Test={val_batch_size}).")
+
+    def __getitem__(self, idx):
+        sequence = torch.tensor(self.sequences[idx], dtype=torch.long)
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        return sequence, label
+
+def collate_batch(batch):
+    label_list, text_list, lengths = [], [], []
+    for (_text, _label) in batch:
+        label_list.append(_label)
+        processed_text = torch.tensor(_text, dtype=torch.long)
+        text_list.append(processed_text)
+        lengths.append(len(processed_text))
+
+    padded_texts = nn.utils.rnn.pad_sequence(text_list, batch_first=True, padding_value=PAD_IDX)
+    labels = torch.stack(label_list)
+    return padded_texts, labels
+
+def create_label_mappings(train_df, label_column='label'):
+    unique_labels = sorted(train_df[label_column].astype(str).unique())
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    int_to_label = {i: label for label, i in label_to_int.items()}
+    print(f"Created mappings for {len(unique_labels)} unique string labels: {unique_labels}")
+    return label_to_int, int_to_label
+
+def create_placeholder_mappings(train_df, label_column='label'):
+    unique_labels = sorted(train_df[label_column].unique())
+    int_to_label = {i: f"label_{i}" for i in unique_labels}
+    label_to_int = {v: k for k, v in int_to_label.items()}
+    print(f"Using existing integer labels. Created placeholder mappings for {len(unique_labels)} labels.")
+    print(f"Placeholder int_to_label map: {int_to_label}")
+    return label_to_int, int_to_label
+
+def to_native(obj):
+    if isinstance(obj, dict):
+        return {to_native(k): to_native(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [to_native(i) for i in obj]
+    elif hasattr(obj, 'item') and callable(obj.item):
+        try:
+            return obj.item()
+        except ValueError:
+             return str(obj)
+    elif isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+    elif isinstance(obj, np.str_):
+        return str(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
     else:
-        print("\nWarning: Training DataLoader could not be created (no training data?).")
-    return train_loader, val_loader, test_loader
-def get_data_pipeline():
-    print("--- Starting Data Pipeline (Transformer Focus) ---")
-    print("\n--- Loading Data ---")
-    df_train = load_raw_data(filepath=config.TRAIN_FILE_PATH)
-    if df_train is None or df_train.empty:
-        raise FileNotFoundError(f"CRITICAL: Training data failed to load from {config.TRAIN_FILE_PATH}. Cannot proceed.")
-    df_val = load_raw_data(filepath=config.VALID_FILE_PATH)
-    df_test = load_raw_data(filepath=config.TEST_FILE_PATH)
-    df_train_processed = df_train.copy()
-    df_val_processed = df_val.copy() if df_val is not None else None
-    df_test_processed = df_test.copy() if df_test is not None else None
-    if df_val_processed is None or df_test_processed is None:
-        print("\n--- Splitting Training Data ---")
-        df_to_split = df_train_processed
-        if df_val_processed is None:
-            print(f"Splitting validation set ({config.VALIDATION_SPLIT_SIZE*100:.1f}%)...")
-            if len(df_to_split) < 2:
-                 print("Warning: Not enough data for validation split. Val set empty.")
-                 df_val_processed = pd.DataFrame(columns=df_to_split.columns)
-                 df_train_intermediate = df_to_split
-            else:
-                 stratify_col_val = df_to_split['label'] if config.STRATIFY_SPLIT else None
-                 try: df_train_intermediate, df_val_processed = train_test_split(df_to_split, test_size=config.VALIDATION_SPLIT_SIZE, random_state=config.SEED, stratify=stratify_col_val)
-                 except ValueError as e: print(f"Warning: Stratified split failed ({e}). Using non-stratified."); df_train_intermediate, df_val_processed = train_test_split(df_to_split, test_size=config.VALIDATION_SPLIT_SIZE, random_state=config.SEED)
-                 print(f"  Intermediate Train: {len(df_train_intermediate)}, Val: {len(df_val_processed)}")
-        else: df_train_intermediate = df_to_split
-        if df_test_processed is None:
-             print(f"Splitting test set ({config.TEST_SPLIT_SIZE*100:.1f}% from original)...")
-             if len(df_train_intermediate) < 2:
-                  print("Warning: Not enough remaining data for test split. Test set empty.")
-                  df_test_processed = pd.DataFrame(columns=df_train_intermediate.columns)
-                  df_train_final = df_train_intermediate
-             else:
-                  current_train_fraction = len(df_train_intermediate) / len(df_to_split) if len(df_to_split) > 0 else 1.0
-                  effective_split_size = config.TEST_SPLIT_SIZE / current_train_fraction if current_train_fraction > 0 else 0
-                  effective_split_size = min(max(0.0, effective_split_size), 1.0 - (1/len(df_train_intermediate)) if len(df_train_intermediate)>1 else 0.0)
-                  if effective_split_size <= 0:
-                       print(f"Warning: Calculated test split size is non-positive. Test set empty.")
-                       df_test_processed = pd.DataFrame(columns=df_train_intermediate.columns)
-                       df_train_final = df_train_intermediate
-                  else:
-                       print(f"Splitting test set ({effective_split_size*100:.1f}% from remaining train)...")
-                       stratify_col_test = df_train_intermediate['label'] if config.STRATIFY_SPLIT else None
-                       try: df_train_final, df_test_processed = train_test_split(df_train_intermediate, test_size=effective_split_size, random_state=config.SEED, stratify=stratify_col_test)
-                       except ValueError as e: print(f"Warning: Stratified split failed ({e}). Using non-stratified."); df_train_final, df_test_processed = train_test_split(df_train_intermediate, test_size=effective_split_size, random_state=config.SEED)
-                       print(f"  Final Train: {len(df_train_final)}, Test: {len(df_test_processed)}")
-        else: df_train_final = df_train_intermediate
-        df_train_processed = df_train_final
-        print("--- Data Splitting Finished ---")
-    df_train_processed, df_val_processed, df_test_processed, \
-    label_to_int, int_to_label, n_classes = prepare_data(
-        df_train_processed, df_val_processed, df_test_processed
-    )
-    if df_train_processed.empty: raise ValueError("Training data is empty after processing.")
-    if df_val_processed is not None and df_val_processed.empty: print("Warning: Validation data is empty after processing.")
-    if df_test_processed is not None and df_test_processed.empty: print("Warning: Test data is empty after processing.")
-    print(f"\nInitializing preprocessor: {config.PREPROCESSOR_TYPE}")
-    preprocessor = BasicTextCleaner()
-    print(f"Loading HuggingFace Tokenizer: {config.TRANSFORMER_MODEL_NAME}")
+        return obj
+
+def save_label_map(int_to_label, filepath):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    str_keyed_map = {str(k): v for k, v in int_to_label.items()}
+    
+    with open(filepath, 'w') as f:
+        json.dump(str_keyed_map, f, indent=4)
+    print(f"Label map saved to {filepath}")
+
+def load_and_prepare_data(train_path, val_path, test_path, label_map_save_path):
     try:
-         tokenizer = AutoTokenizer.from_pretrained(config.TRANSFORMER_MODEL_NAME)
-         print(f"Tokenizer loaded. Vocab size: {tokenizer.vocab_size}")
+        train_df = pd.read_csv(train_path)
+        val_df = pd.read_csv(val_path)
+        test_df = pd.read_csv(test_path)
+        print("Raw data loaded successfully.")
+        print(f"Train shape: {train_df.shape}, Val shape: {val_df.shape}, Test shape: {test_df.shape}")
+
+        label_column = 'label'
+        for df_name, df in [('Train', train_df), ('Validation', val_df), ('Test', test_df)]:
+            if 'text' not in df.columns or label_column not in df.columns:
+                raise ValueError(f"{df_name} DataFrame is missing 'text' or '{label_column}' column.")
+            if df[label_column].isnull().any():
+                print(f"Warning: Found NaN values in '{label_column}' of {df_name} data. Dropping rows.")
+                df.dropna(subset=[label_column], inplace=True)
+            if 'text' in df.columns:
+                 df['text'] = df['text'].astype(str)
+
+
+        label_to_int, int_to_label = None, None
+        n_class = train_df[label_column].nunique()
+
+        if ptypes.is_integer_dtype(train_df[label_column]):
+            print(f"Detected integer labels in '{label_column}' column. Using them directly. n_class={n_class}")
+            for df_name, df in [('Validation', val_df), ('Test', test_df)]:
+                 if not ptypes.is_integer_dtype(df[label_column]):
+                      try:
+                           df[label_column] = df[label_column].astype(int)
+                           print(f"Converted '{label_column}' in {df_name} to integer.")
+                      except (ValueError, TypeError):
+                           raise TypeError(f"Training labels are integers, but {df_name} labels in column '{label_column}' are not and cannot be converted to integer.")
+            if not os.path.exists(label_map_save_path):
+                print(f"Creating placeholder label map for integer labels at {label_map_save_path}")
+                _, int_to_label = create_placeholder_mappings(train_df, label_column)
+                save_label_map(int_to_label, label_map_save_path)
+
+        elif ptypes.is_string_dtype(train_df[label_column]) or ptypes.is_object_dtype(train_df[label_column]):
+            print(f"Detected string/object labels in '{label_column}' column. Creating mappings. n_class={n_class}")
+            label_to_int, int_to_label = create_label_mappings(train_df, label_column)
+            n_class = len(label_to_int)
+
+            print("Mapping string labels to integers for all datasets...")
+            for df_name, df in [('Train', train_df), ('Validation', val_df), ('Test', test_df)]:
+                original_labels = set(df[label_column].unique())
+                df[label_column] = df[label_column].map(label_to_int)
+                if df[label_column].isnull().any():
+                    unmapped_labels = original_labels - set(label_to_int.keys())
+                    print(f"Warning: Found labels in {df_name} set not present in training data mapping: {unmapped_labels}. Dropping rows with these unmappable labels.")
+                    df.dropna(subset=[label_column], inplace=True)
+                df[label_column] = df[label_column].astype(int)
+
+            save_label_map(int_to_label, label_map_save_path)
+
+        else:
+             raise TypeError(f"Unsupported label type '{train_df[label_column].dtype}' in column '{label_column}'. Labels must be integers or strings.")
+
+        print_data_summary(train_df, "Train", label_column)
+        print_data_summary(val_df, "Validation", label_column)
+        print_data_summary(test_df, "Test", label_column)
+        print(f"Labels processed. '{label_column}' column now contains integer indices.")
+        print(f"Final determined number of classes (n_class): {n_class}")
+
+        return train_df, val_df, test_df, label_to_int, int_to_label, n_class
+
+    except FileNotFoundError as e:
+        print(f"Error loading data: {e}. Check file paths in config.py.")
+        raise
     except Exception as e:
-         print(f"Fatal Error: Failed to load Transformer tokenizer '{config.TRANSFORMER_MODEL_NAME}': {e}")
-         sys.exit(1)
-    print("\nApplying basic text cleaning to all datasets...")
-    train_texts = preprocessor.preprocess_batch(df_train_processed['text'].tolist())
-    val_texts = preprocessor.preprocess_batch(df_val_processed['text'].tolist()) if df_val_processed is not None else []
-    test_texts = preprocessor.preprocess_batch(df_test_processed['text'].tolist()) if df_test_processed is not None else []
-    print("Text cleaning complete.")
-    print("\nCreating PyTorch Datasets...")
-    train_dataset = TransformerDataset(
-        texts=train_texts, labels=df_train_processed['label'],
-        tokenizer=tokenizer, max_len=config.MAX_LEN
-    ) if not df_train_processed.empty else None
-    val_dataset = TransformerDataset(
-        texts=val_texts, labels=df_val_processed['label'],
-        tokenizer=tokenizer, max_len=config.MAX_LEN
-    ) if df_val_processed is not None and not df_val_processed.empty else None
-    test_dataset = TransformerDataset(
-        texts=test_texts, labels=df_test_processed['label'],
-        tokenizer=tokenizer, max_len=config.MAX_LEN
-    ) if df_test_processed is not None and not df_test_processed.empty else None
-    train_loader, val_loader, test_loader = create_dataloaders(
-        train_dataset, val_dataset, test_dataset,
-        batch_size=config.TRAIN_BATCH_SIZE,
-        val_batch_size=config.VALID_BATCH_SIZE
-    )
-    print("\n--- Data Pipeline Finished ---")
-    return train_loader, val_loader, test_loader, label_to_int, int_to_label, n_classes, tokenizer
+        print(f"An unexpected error occurred during data loading/preparation: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+def plot_class_distribution(df, label_column='label', title="Class Distribution", save_path=None):
+    """Plots the distribution of classes in a DataFrame."""
+    plt.figure(figsize=(10, 6))
+    class_counts = df[label_column].value_counts()
+    sns.barplot(x=class_counts.index, y=class_counts.values, palette="viridis")
+    plt.title(title)
+    plt.xlabel("Class Label")
+    plt.ylabel("Frequency")
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+        print(f"Class distribution plot saved to {save_path}")
+    plt.show()
+
+def plot_sequence_lengths(token_lists, title="Sequence Length Distribution (Before Padding)", save_path=None):
+    """Plots the distribution of sequence lengths."""
+    lengths = [len(tokens) for tokens in token_lists]
+    plt.figure(figsize=(10, 6))
+    sns.histplot(lengths, bins=50, kde=True)
+    avg_len = np.mean(lengths)
+    med_len = np.median(lengths)
+    max_len = np.max(lengths)
+    plt.title(f"{title}\nAvg: {avg_len:.2f}, Median: {med_len:.0f}, Max: {max_len:.0f}")
+    plt.xlabel("Sequence Length")
+    plt.ylabel("Frequency")
+    plt.axvline(avg_len, color='r', linestyle='dashed', linewidth=1, label=f'Avg Len ({avg_len:.2f})')
+    plt.axvline(config.MAX_LENGTH, color='g', linestyle='dashed', linewidth=1, label=f'MAX_LENGTH ({config.MAX_LENGTH})')
+    plt.legend()
+    plt.tight_layout()
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+        print(f"Sequence length plot saved to {save_path}")
+    plt.show()
+
+def print_data_summary(df, name, label_column='label'):
+    """Prints a summary of the dataframe."""
+    print(f"\n--- {name} Data Summary ---")
+    print(f"Shape: {df.shape}")
+    if label_column in df.columns:
+        print("Label Distribution:")
+        print(df[label_column].value_counts(normalize=True) * 100)
+    else:
+        print("Label column not found.")
+    print("-" * (len(name) + 18))
