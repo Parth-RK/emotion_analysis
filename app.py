@@ -1,55 +1,65 @@
 import torch
 import os
 import json
-import argparse
 import sys
-from operator import itemgetter
+import traceback
+import gradio as gr
 try:
     import config
     import data_handler
     import engine
+    from transformers import AutoTokenizer as HfAutoTokenizer
 except ImportError as e:
     print(f"Error importing core modules: {e}")
-    print("Ensure config.py, data_handler.py, and engine.py are accessible.")
+    print("Ensure config.py, data_handler.py, engine.py, and Hugging Face transformers are accessible.")
     sys.exit(1)
 except Exception as e:
     print(f"An unexpected error occurred during imports: {e}")
     sys.exit(1)
+
 def load_run_config(model_type_dir):
     config_path = os.path.join(model_type_dir, config.RUN_CONFIG_FILENAME)
     if not os.path.exists(config_path):
         print(f"Warning: Run configuration file not found at {config_path}. Using global config.py defaults.")
-        class RunConfig:
+        class DefaultRunConfig:
              MODEL_TYPE = config.MODEL_TYPE
              MAX_LEN = config.MAX_LEN
-             PREPROCESSOR_TYPE = config.PREPROCESSOR_TYPE
+             PREPROCESSOR_TYPE = getattr(config, 'PREPROCESSOR_TYPE', 'basic')
              TRANSFORMER_MODEL_NAME = config.TRANSFORMER_MODEL_NAME
-        return RunConfig()
+        return DefaultRunConfig()
+
     try:
-        with open(config_path, 'r') as f: loaded_config = json.load(f)
-        class RunConfig:
+        with open(config_path, 'r') as f:
+            loaded_config = json.load(f)
+
+        class LoadedRunConfig:
             def __init__(self, **entries):
                 self.__dict__.update(entries)
-                if not hasattr(self, 'TRANSFORMER_MODEL_NAME'):
-                     print("Warning: Loaded config missing TRANSFORMER_MODEL_NAME. Using global default.")
+                if not hasattr(self, 'TRANSFORMER_MODEL_NAME') or not self.TRANSFORMER_MODEL_NAME:
+                     print("Warning: Loaded config missing TRANSFORMER_MODEL_NAME or value is empty. Using global default.")
                      self.TRANSFORMER_MODEL_NAME = config.TRANSFORMER_MODEL_NAME
-                if not hasattr(self, 'PREPROCESSOR_TYPE'):
-                     self.PREPROCESSOR_TYPE = config.PREPROCESSOR_TYPE
+                if not hasattr(self, 'PREPROCESSOR_TYPE') or not self.PREPROCESSOR_TYPE:
+                     print("Warning: Loaded config missing PREPROCESSOR_TYPE or value is empty. Using global default 'basic'.")
+                     self.PREPROCESSOR_TYPE = 'basic'
+
         print(f"Loaded run configuration from {config_path}")
         loaded_type = loaded_config.get('MODEL_TYPE')
-        if loaded_type != os.path.basename(model_type_dir):
+        if loaded_type and loaded_type != os.path.basename(model_type_dir):
              print(f"Warning: Loaded config MODEL_TYPE ('{loaded_type}') mismatches directory ('{os.path.basename(model_type_dir)}').")
-        if loaded_type != 'Transformer':
+        if loaded_type and loaded_type != 'Transformer':
              print(f"Warning: Loaded config specifies MODEL_TYPE '{loaded_type}', but this app expects 'Transformer'. Proceeding with caution.")
-        return RunConfig(**loaded_config)
+
+        return LoadedRunConfig(**loaded_config)
+
     except Exception as e:
         print(f"Error loading run config from {config_path}: {e}. Using global defaults.")
-        class RunConfig:
+        class DefaultRunConfig:
              MODEL_TYPE = config.MODEL_TYPE
              MAX_LEN = config.MAX_LEN
-             PREPROCESSOR_TYPE = config.PREPROCESSOR_TYPE
+             PREPROCESSOR_TYPE = getattr(config, 'PREPROCESSOR_TYPE', 'basic')
              TRANSFORMER_MODEL_NAME = config.TRANSFORMER_MODEL_NAME
-        return RunConfig()
+        return DefaultRunConfig()
+
 def load_prediction_artifacts(model_type_dir):
     print(f"\nLoading artifacts from directory: {model_type_dir}")
     if not os.path.isdir(model_type_dir):
@@ -58,40 +68,56 @@ def load_prediction_artifacts(model_type_dir):
     run_cfg = load_run_config(model_type_dir)
     label_to_int, int_to_label = data_handler.load_label_mappings(config.LABEL_MAP_PATH)
     if not int_to_label:
-        print("Warning: Label map not found or empty. Predictions will show integer labels.")
+        print(f"Warning: Label map not found or empty at {config.LABEL_MAP_PATH}. Predictions will show integer labels or may fail.")
         int_to_label = {}
     n_classes = len(int_to_label) if int_to_label else 0
     if n_classes == 0:
-        print("Warning: Cannot determine number of classes from label map. Trying to infer...")
+        print("Warning: Cannot determine number of classes from label map. Trying to infer from Transformer config...")
         try:
              from transformers import AutoConfig as HfAutoConfig
-             model_hf_config = HfAutoConfig.from_pretrained(run_cfg.TRANSFORMER_MODEL_NAME)
-             n_classes = model_hf_config.num_labels
+             model_name_for_config = getattr(run_cfg, 'TRANSFORMER_MODEL_NAME', config.TRANSFORMER_MODEL_NAME)
+             if not model_name_for_config:
+                  raise ValueError("TRANSFORMER_MODEL_NAME is not specified in config or loaded config.")
+
+             model_hf_config = HfAutoConfig.from_pretrained(model_name_for_config)
+             n_classes = getattr(model_hf_config, 'num_labels', 0)
+             if n_classes <= 1:
+                 raise ValueError("Inferred <= 1 class from Transformer config num_labels.")
+
              print(f"Inferred n_classes={n_classes} from Transformer config.")
-             if n_classes <= 1: raise ValueError("Inferred <= 1 class.")
         except Exception as infer_e:
               print(f"Error: Failed to determine n_classes from label map or model config ({infer_e}). Cannot load model.")
               return None, None, None, None, None
+
     try:
         print(f"Loading tokenizer: {run_cfg.TRANSFORMER_MODEL_NAME}")
-        tokenizer = data_handler.AutoTokenizer.from_pretrained(run_cfg.TRANSFORMER_MODEL_NAME)
+        tokenizer = HfAutoTokenizer.from_pretrained(run_cfg.TRANSFORMER_MODEL_NAME)
     except Exception as e:
         print(f"Error loading tokenizer '{run_cfg.TRANSFORMER_MODEL_NAME}': {e}")
         return None, None, None, None, None
+
     model_path = os.path.join(model_type_dir, "model", config.BEST_MODEL_FILENAME)
     try:
-        model = engine.load_trained_model(model_path, 'Transformer', n_classes)
+        print(f"Loading model from {model_path}")
+        model = engine.load_trained_model(model_path, run_cfg.MODEL_TYPE, n_classes)
+        if model is None:
+             raise ValueError("engine.load_trained_model returned None.")
     except FileNotFoundError:
         print(f"Error: Trained model file not found at {model_path}")
         return None, None, None, None, None
     except Exception as e:
         print(f"Error loading trained model: {e}")
+        traceback.print_exc()
         return None, None, None, None, None
-    print(f"Initializing preprocessor: {run_cfg.PREPROCESSOR_TYPE}")
-    if run_cfg.PREPROCESSOR_TYPE != 'basic':
-         print(f"Warning: Run config specified preprocessor '{run_cfg.PREPROCESSOR_TYPE}', but using 'basic'.")
+
+    print(f"Initializing preprocessor...")
     preprocessor = data_handler.BasicTextCleaner()
+    print(f"Using preprocessor: BasicTextCleaner")
+
+
+    print("Artifacts loaded successfully.")
     return model, tokenizer, preprocessor, int_to_label, run_cfg
+
 class EmotionPredictor:
     def __init__(self, model, tokenizer, preprocessor, int_to_label, run_config):
         self.model = model
@@ -99,100 +125,192 @@ class EmotionPredictor:
         self.preprocessor = preprocessor
         self.int_to_label = int_to_label if int_to_label else {}
         self.run_config = run_config
-        self.device = config.DEVICE
-        self.model.to(self.device)
+        self.device = getattr(config, 'DEVICE', 'cpu')
+        try:
+            self.model.to(self.device)
+            print(f"Model moved to device: {self.device}")
+        except Exception as e:
+            print(f"Warning: Could not move model to {self.device}: {e}. Using CPU.")
+            self.device = 'cpu'
+            self.model.to(self.device)
+
         self.model.eval()
         print("\nEmotionPredictor initialized.")
+        print(f"Model MAX_LEN: {self.run_config.MAX_LEN}")
+        print(f"Number of classes inferred/loaded: {len(self.int_to_label) if self.int_to_label else 'N/A (using inferred n_classes)'}")
+
+
     def _preprocess_input(self, text):
         cleaned_text = self.preprocessor.clean(text)
         return cleaned_text
+
     def predict(self, text):
+        if not text or not isinstance(text, str):
+            return {}
+
         processed_input_text = self._preprocess_input(text)
+
         try:
             with torch.no_grad():
                 encoding = self.tokenizer.encode_plus(
-                    processed_input_text, add_special_tokens=True,
-                    max_length=self.run_config.MAX_LEN, padding='max_length',
-                    truncation=True, return_attention_mask=True, return_tensors='pt',
+                    processed_input_text,
+                    add_special_tokens=True,
+                    max_length=self.run_config.MAX_LEN,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt',
                 )
                 input_ids = encoding['input_ids'].to(self.device)
                 attention_mask = encoding['attention_mask'].to(self.device)
-                logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+                model_input = {'input_ids': input_ids, 'attention_mask': attention_mask}
+
+                logits = self.model(**model_input)
+                if isinstance(logits, tuple):
+                    logits = logits[0]
+
             probabilities = torch.softmax(logits, dim=1).squeeze()
             probabilities_np = probabilities.cpu().numpy()
-            results = []
+
+            results_dict = {}
             num_outputs = logits.shape[1]
-            for i in range(num_outputs):
-                prob = probabilities_np[i] if i < len(probabilities_np) else 0.0
-                label_name = self.int_to_label.get(i, f"Label_{i}")
-                results.append({'label': label_name, 'score': float(prob)})
-            results.sort(key=itemgetter('score'), reverse=True)
-            return results
+            
+            if not self.int_to_label:
+                 print("Warning: Using integer labels as label map is empty.")
+                 for i in range(num_outputs):
+                     prob = probabilities_np[i] if i < len(probabilities_np) else 0.0
+                     results_dict[f"Label_{i}"] = float(prob)
+            else:
+                 if num_outputs != len(self.int_to_label):
+                      print(f"Warning: Model output size ({num_outputs}) mismatches label map size ({len(self.int_to_label)}). Mapping might be incorrect.")
+                      use_int_labels_fallback = True
+                      if num_outputs <= len(self.int_to_label):
+                           print("Mapping available labels up to model output size.")
+                           for i in range(num_outputs):
+                               prob = probabilities_np[i] if i < len(probabilities_np) else 0.0
+                               label_name = self.int_to_label.get(i, f"Label_{i} (unmapped)")
+                               results_dict[label_name] = float(prob)
+                           use_int_labels_fallback = False
+
+                      if use_int_labels_fallback:
+                           print("Falling back to integer labels due to mapping mismatch.")
+                           for i in range(num_outputs):
+                               prob = probabilities_np[i] if i < len(probabilities_np) else 0.0
+                               results_dict[f"Label_{i}"] = float(prob)
+
+                 else:
+                    for i in range(num_outputs):
+                         prob = probabilities_np[i] if i < len(probabilities_np) else 0.0
+                         label_name = self.int_to_label.get(i, f"Label_{i} (missing_map)")
+                         results_dict[label_name] = float(prob)
+
+            return results_dict
+
         except Exception as e:
             print(f"\nError during prediction: {e}")
-            import traceback; traceback.print_exc()
-            return None
-def run_demo_evaluation(predictor):
-    print("\n===================================")
-    print("=== Running Built-in Examples ===")
-    print("===================================")
-    demo_examples = [
-        "I am feeling incredibly happy and excited about the party tonight!",
-        "This movie is making me feel really sad and thoughtful.",
-        "I'm absolutely furious that my flight was cancelled again!",
-        "Wow, I did not expect that plot twist at all!",
-        "Walking alone late at night makes me feel quite anxious.",
-        "I just love the way the sun sets over the ocean.",
-        "He seemed quite indifferent to the news.",
-        "This complex puzzle is incredibly frustrating!",
-        "I feel so calm and peaceful listening to this music.",
-        "The project deadline is approaching very quickly."
-    ]
-    for i, text in enumerate(demo_examples):
-        print(f"\nExample {i+1}/{len(demo_examples)}: '{text}'")
-        results = predictor.predict(text)
-        if results:
-            top_result = results[0]
-            print(f"  --> Predicted: {top_result['label']} (Score: {top_result['score']:.4f})")
-        else:
-            print("  --> Prediction failed for this example.")
-    print("\n===================================")
-    print("=== Built-in Examples Finished ===")
-    print("===================================")
-def run_interactive_app(predictor):
-    print("\n--- Interactive Emotion Prediction ---")
-    print(f"Using model: {predictor.run_config.TRANSFORMER_MODEL_NAME}")
-    print("Enter text to classify, or type 'quit' or 'exit' to stop.")
-    while True:
-        try:
-            user_input = input("\nEnter text: ").strip()
-            if not user_input: continue
-            if user_input.lower() in ['quit', 'exit']: print("Exiting."); break
-            prediction_results = predictor.predict(user_input)
-            if prediction_results:
-                print("\nPrediction Results:")
-                max_score = prediction_results[0]['score'] if prediction_results else 0
-                for result in prediction_results:
-                    indicator = " *" if result['score'] == max_score and max_score > 0 else ""
-                    print(f"  - {result['label']}: {result['score']:.4f}{indicator}")
-            else: print("  Prediction failed.")
-        except (EOFError, KeyboardInterrupt): print("\nExiting."); break
-        except Exception as e: print(f"An unexpected error occurred in the loop: {e}")
-def main():
-    parser = argparse.ArgumentParser(description="Interactive Emotion Prediction App (Transformer)")
-    args = parser.parse_args()
-    model_type_dir = config.MODEL_TYPE_ARTIFACTS_DIR
-    if not os.path.isdir(model_type_dir):
-        print(f"Error: Artifact directory for Transformer not found at {model_type_dir}")
-        print("Please ensure the model has been trained first using 'python main.py'.")
-        sys.exit(1)
-    print(f"Loading Transformer artifacts from: {model_type_dir}")
+            traceback.print_exc()
+            return {"Prediction Error": 0.0}
+
+
+predictor = None
+app_load_error = None
+
+model_type_dir = config.MODEL_TYPE_ARTIFACTS_DIR
+
+if not os.path.isdir(model_type_dir):
+    app_load_error = f"Error: Artifact directory for Transformer not found at {model_type_dir}. Please ensure the model has been trained first using 'python main.py'."
+    print(app_load_error)
+else:
+    print(f"Attempting to load Transformer artifacts from: {model_type_dir}")
     model, tokenizer, preprocessor, int_to_label, run_cfg = load_prediction_artifacts(model_type_dir)
-    if model is None or tokenizer is None:
-        print("Failed to load necessary artifacts (model/tokenizer). Exiting.")
-        sys.exit(1)
-    predictor = EmotionPredictor(model, tokenizer, preprocessor, int_to_label, run_cfg)
-    run_demo_evaluation(predictor)
-    run_interactive_app(predictor)
+
+    if model is None or tokenizer is None or preprocessor is None or run_cfg is None:
+        app_load_error = "Failed to load necessary artifacts (model, tokenizer, preprocessor, or config). Cannot start application."
+        print(app_load_error)
+    else:
+        try:
+            predictor = EmotionPredictor(model, tokenizer, preprocessor, int_to_label, run_cfg)
+            print("Predictor successfully initialized.")
+        except Exception as e:
+            app_load_error = f"Error initializing EmotionPredictor: {e}"
+            print(app_load_error)
+            traceback.print_exc()
+
+
+def gradio_predict_emotion(text):
+    if app_load_error:
+         return {"Application Error": 1.0}
+     
+    if predictor is None:
+         return {"Application Not Initialized": 1.0}
+
+    prediction_results_dict = predictor.predict(text)
+
+    if prediction_results_dict is None:
+        return {"Prediction Failed": 1.0}
+
+    return prediction_results_dict
+
+demo_examples = [
+    "I am feeling incredibly happy and excited about the party tonight!",
+    "This movie is making me feel really sad and thoughtful.",
+    "I'm absolutely furious that my flight was cancelled again!",
+    "Wow, I did not expect that plot twist at all!",
+    "Walking alone late at night makes me feel quite anxious.",
+    "I just love the way the sun sets over the ocean.",
+    "He seemed quite indifferent to the news.",
+    "This complex puzzle is incredibly frustrating!",
+    "I feel so calm and peaceful listening to this music.",
+    "The project deadline is approaching very quickly."
+]
+
+if app_load_error:
+    print("Gradio app starting in error state due to loading failure.")
+    interface = gr.Interface(
+        fn=lambda text: {"Error": 1.0, "Details": app_load_error},
+        inputs=gr.Textbox(label="Enter Text (App Failed to Load)"),
+        outputs=gr.Label(label="Error"),
+        title="Emotion Classifier (Loading Error)",
+        description=app_load_error,
+        allow_flagging="never",
+        theme=gr.themes.Soft()
+    )
+else:
+    print("Gradio app starting with loaded artifacts.")
+    model_name_desc = getattr(predictor.run_config, 'TRANSFORMER_MODEL_NAME', 'Transformer Model')
+    description_text = f"Enter text below to get predicted emotion scores using the model: **{model_name_desc}**"
+
+    interface = gr.Interface(
+        fn=gradio_predict_emotion,
+        inputs=gr.Textbox(
+            lines=3,
+            label="Enter Text",
+            placeholder="Type your sentence here...",
+            show_label=True
+        ),
+        outputs=gr.Label(
+            num_top_classes=None,
+            label="Predicted Emotion Scores"
+        ),
+        title="Text Emotion Classifier",
+        description=description_text,
+        examples=demo_examples,
+        cache_examples=False,
+        allow_flagging="never",
+        theme=gr.themes.Soft()
+    )
+
 if __name__ == "__main__":
-    main()
+    launch_port = getattr(config, 'APP_PORT', 7860)
+    try:
+        print(f"Launching Gradio interface on port {launch_port}...")
+        interface.launch(server_port=launch_port, share=True)
+    except OSError as e:
+        print(f"Error: Port {launch_port} already in use or blocked.")
+        print(f"Please try a different port, e.g., interface.launch(server_port=XXXX).")
+        sys.exit(1)
+    except Exception as e:
+        print(f"An error occurred during Gradio launch: {e}")
+        traceback.print_exc()
+        sys.exit(1)
