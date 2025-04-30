@@ -1,7 +1,6 @@
 
 # Emotion Analysis Engine 🔥
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Stop guessing how your users feel!** This repo turbo-charges pre-trained Hugging Face Transformers, fine-tuning them to sniff out emotions in text like a digital bloodhound. 🐶
 
@@ -132,7 +131,7 @@ Sure, why not? Fork it, break it, fix it, submit a PR. Issues welcome too.
 
 ## 📄 License
 
-MIT. Do what you want, just don't blame me if your AI becomes sentient and judges your music taste.
+Apache 2.0. Do what you want, just don't blame me if your AI becomes sentient and judges your music taste.
 
 ## 🙏 Shoutouts
 
