@@ -4,81 +4,113 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
+
 try:
-    from sklearn.metrics import classification_report, confusion_matrix
+    # Need these for multi-label classification_report
+    from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+    from sklearn.preprocessing import MultiLabelBinarizer
 except ImportError:
     classification_report = None
     confusion_matrix = None
+    accuracy_score = None
+    MultiLabelBinarizer = None
     print("Warning: scikit-learn not installed. Classification report and confusion matrix generation will be unavailable.")
     print("         Install it using: pip install scikit-learn")
+
 import config
+
+# Set theme for plots
 sns.set_theme(style="whitegrid")
+
 def plot_training_history(history, save_path=None):
+    """Plots training and validation loss and metrics."""
     if not isinstance(history, dict) or not history:
         print("Plotter Warning: History dictionary is empty or invalid. Cannot plot training history.")
         return
+
+    # Default save path from config
     if save_path is None:
         save_path = getattr(config, 'TRAINING_PLOTS_PATH', None)
         if save_path is None:
              print("Plotter Error: Default save path (config.TRAINING_PLOTS_PATH) not found and no save_path provided.")
              return
+
+    # Check for required data
     if 'train_loss' not in history or not history['train_loss']:
          print("Plotter Warning: 'train_loss' not found or empty in history. Cannot plot.")
          return
-    if 'val_loss' not in history or not history['val_loss']:
-         print("Plotter Warning: 'val_loss' not found or empty in history. Loss plot will only show training loss.")
-    epochs = range(1, len(history['train_loss']) + 1)
+
+    # Convert history dict to DataFrame for easier plotting
     df = pd.DataFrame(history)
-    df['epoch'] = epochs
-    num_plots = 0
-    plot_config = {}
-    if 'train_loss' in df and 'val_loss' in df:
-        num_plots += 1
-        plot_config['loss'] = {'train': 'train_loss', 'val': 'val_loss', 'title': 'Loss'}
-    if 'val_accuracy' in df:
-        num_plots += 1
-        plot_config['accuracy'] = {'train': 'train_accuracy', 'val': 'val_accuracy', 'title': 'Accuracy'}
-    if 'val_f1_weighted' in df:
-         num_plots += 1
-         plot_config['f1'] = {'train': 'train_f1_weighted', 'val': 'val_f1_weighted', 'title': 'Weighted F1 Score'}
-    if num_plots == 0:
-        print("Plotter Warning: No plottable validation metrics (accuracy, f1_weighted) found in history dict, besides loss.")
-        if 'train_loss' in df:
-            num_plots = 1
-            plot_config = {'loss': {'train': 'train_loss', 'val': None, 'title': 'Training Loss'}}
-        else:
-             return
-    plt.figure(figsize=(6 * num_plots, 5))
-    plot_idx = 1
-    for metric_key, cfg in plot_config.items():
-        plt.subplot(1, num_plots, plot_idx)
-        has_train = cfg.get('train') and cfg['train'] in df
-        has_val = cfg.get('val') and cfg['val'] in df
+    if df.empty:
+        print("Plotter Warning: History DataFrame is empty. Cannot plot.")
+        return
+
+    df['epoch'] = range(1, len(df) + 1)
+
+    # Determine which plots to show based on available data
+    plottable_metrics = {
+        'loss': {'train': 'train_loss', 'val': 'val_loss', 'title': 'Loss', 'ylim': (None, None)},
+        # These metric names match what evaluate_step returns for multi-label
+        'accuracy': {'train': None, 'val': 'val_accuracy', 'title': 'Accuracy', 'ylim': (0, 1)},
+        'f1': {'train': None, 'val': 'val_f1_weighted', 'title': 'Weighted F1 Score', 'ylim': (0, 1)},
+        'precision': {'train': None, 'val': 'val_precision_weighted', 'title': 'Weighted Precision', 'ylim': (0, 1)},
+        'recall': {'train': None, 'val': 'val_recall_weighted', 'title': 'Weighted Recall', 'ylim': (0, 1)},
+    }
+
+    # Filter for metrics present in the DataFrame
+    active_plots = {k: v for k, v in plottable_metrics.items() if (v['train'] in df.columns and df[v['train']].notna().any()) or (v['val'] in df.columns and df[v['val']].notna().any())}
+
+    if not active_plots:
+        print("Plotter Warning: No plottable metrics found in history dict.")
+        return
+
+    num_plots = len(active_plots)
+    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5), squeeze=False) # squeeze=False ensures axes is always 2D
+
+    plot_idx = 0
+    for metric_key, cfg in active_plots.items():
+        ax = axes[0, plot_idx] # Get the current subplot axis
+
+        has_train = cfg.get('train') and cfg['train'] in df and df[cfg['train']].notna().any()
+        has_val = cfg.get('val') and cfg['val'] in df and df[cfg['val']].notna().any()
+
         if has_train:
-            plt.plot(df['epoch'], df[cfg['train']], label=f"Train {cfg['title']}", marker='o', linestyle='-')
+            ax.plot(df['epoch'], df[cfg['train']], label=f"Train {cfg['title']}", marker='o', linestyle='-')
         if has_val:
-            plt.plot(df['epoch'], df[cfg['val']], label=f"Validation {cfg['title']}", marker='x', linestyle='--')
-        if not has_train and not has_val:
-            print(f"Plotter Warning: No data found for {cfg['title']}. Skipping plot.")
-            continue
-        plt.title(f"{cfg['title']} vs. Epoch")
-        plt.xlabel('Epoch')
-        plt.ylabel(cfg['title'])
-        if metric_key in ['accuracy', 'f1']:
-            min_val = 0
-            max_val = 1
-            if has_val and not df[cfg['val']].empty:
-                min_val = max(0, df[cfg['val']].min() - 0.05)
-            if has_val and not df[cfg['val']].empty:
-                max_val = min(1.05, df[cfg['val']].max() + 0.05)
-            elif has_train and not df[cfg['train']].empty:
-                 min_val = max(0, df[cfg['train']].min() - 0.05)
-                 max_val = min(1.05, df[cfg['train']].max() + 0.05)
-            plt.ylim(bottom=min_val, top=max_val)
-        plt.legend()
-        plt.grid(True)
+            ax.plot(df['epoch'], df[cfg['val']], label=f"Validation {cfg['title']}", marker='x', linestyle='--')
+
+        ax.set_title(f"{cfg['title']} vs. Epoch")
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel(cfg['title'])
+
+        # Set y-limits if specified
+        if cfg['ylim'] is not None:
+            y_min, y_max = cfg['ylim']
+            # Adjust limits dynamically if needed, especially for loss
+            if metric_key == 'loss':
+                 all_loss_values = []
+                 if has_train: all_loss_values.extend(df[cfg['train']].dropna().tolist())
+                 if has_val: all_loss_values.extend(df[cfg['val']].dropna().tolist())
+                 if all_loss_values:
+                      min_loss = min(all_loss_values)
+                      max_loss = max(all_loss_values)
+                      # Add some padding, but prevent negative loss limits
+                      y_min = max(0, min_loss * 0.9) if min_loss >= 0 else min_loss * 1.1 # Adjust for negative possible loss
+                      y_max = max_loss * 1.1 if max_loss >= 0 else max_loss * 0.9
+                      # Ensure min < max, handle flat lines
+                      if y_min >= y_max: y_max = y_min + 0.1 # Add minimal range if flat
+                      ax.set_ylim(bottom=y_min, top=y_max)
+            elif y_min is not None or y_max is not None:
+                ax.set_ylim(bottom=y_min, top=y_max)
+
+
+        ax.legend()
+        ax.grid(True)
         plot_idx += 1
+
     plt.tight_layout(pad=2.0)
+
     if save_path:
         try:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -87,60 +119,91 @@ def plot_training_history(history, save_path=None):
         except Exception as e:
             print(f"Plotter Error: Could not save training plot to {save_path}. Error: {e}")
     else:
-        pass
-    plt.close()
+        # Optionally show plot if save_path is None (e.g., for debugging)
+        # plt.show()
+        pass # Just close silently if no save path
+    plt.close(fig) # Use fig object to close plot correctly
+
+
 def generate_classification_analysis(true_labels, predictions, int_to_label, report_path=None, cm_path=None, prefix=""):
-    if classification_report is None or confusion_matrix is None:
+    """
+    Generates and prints a classification report for multi-label data.
+    Note: Confusion matrix plot is skipped for multi-label classification
+    as standard confusion matrix is not applicable.
+    """
+    if classification_report is None or accuracy_score is None:
         print("Plotter Info: Skipping classification analysis because scikit-learn is not installed.")
         return
+
     if report_path is None:
         report_path = getattr(config, 'TEST_REPORT_PATH', None)
     if cm_path is None:
-        cm_path = getattr(config, 'CONFUSION_MATRIX_PATH', None)
-    if not report_path and not cm_path:
-        print("Plotter Info: No paths provided or found in config for classification report or confusion matrix. Analysis will only be printed.")
-    if not isinstance(true_labels, (list, np.ndarray)) or not isinstance(predictions, (list, np.ndarray)):
-        print("Plotter Error: true_labels and predictions must be lists or numpy arrays.")
+        # For multi-label, we generally skip the standard confusion matrix plot.
+        # Setting cm_path to None to prevent plotting it.
+        cm_path = None # Force skip CM plot for multi-label
+
+    if not isinstance(true_labels, np.ndarray) or not isinstance(predictions, np.ndarray):
+        print("Plotter Error: true_labels and predictions must be numpy arrays (multi-hot format).")
         return
-    if len(true_labels) != len(predictions):
-        print(f"Plotter Error: Length mismatch between true_labels ({len(true_labels)}) and predictions ({len(predictions)}).")
+
+    if true_labels.shape != predictions.shape:
+        print(f"Plotter Error: Shape mismatch between true_labels {true_labels.shape} and predictions {predictions.shape}.")
         return
-    if len(true_labels) == 0:
+
+    if true_labels.size == 0:
         print("Plotter Info: true_labels and predictions are empty. Skipping classification analysis.")
         return
-    unique_labels_present = sorted(list(set(true_labels) | set(predictions)))
+
+    # Use the loaded int_to_label mapping for target names
     if not int_to_label:
-        print("Plotter Warning: int_to_label mapping not provided or empty. Using integer labels as names.")
-        label_names = [str(i) for i in unique_labels_present]
-        target_labels_for_report = unique_labels_present
+        print("Plotter Warning: int_to_label mapping not provided or empty. Using integer indices as names.")
+        label_names = [str(i) for i in range(true_labels.shape[1])]
+        target_labels_for_report = list(range(true_labels.shape[1])) # Report for all possible indices
     else:
         try:
-            int_to_label_clean = {int(k): str(v) for k, v in int_to_label.items()}
-        except (ValueError, TypeError):
-            print("Plotter Warning: Could not properly convert int_to_label keys/values. Using integer labels.")
-            int_to_label_clean = {}
-        if not int_to_label_clean:
-             label_names = [str(i) for i in unique_labels_present]
-             target_labels_for_report = unique_labels_present
-        else:
-             label_names = [int_to_label_clean.get(i, f"Unknown({i})") for i in unique_labels_present]
-             target_labels_for_report = unique_labels_present
+            # Ensure int_to_label has entries for all columns in true_labels/predictions
+            num_classes_data = true_labels.shape[1]
+            if len(int_to_label) != num_classes_data:
+                print(f"Plotter Warning: Mismatch between number of classes in data ({num_classes_data}) and int_to_label map ({len(int_to_label)}). Using integer indices as names.")
+                label_names = [str(i) for i in range(num_classes_data)]
+                target_labels_for_report = list(range(num_classes_data))
+            else:
+                # Sort labels by index to match column order
+                sorted_labels = sorted(int_to_label.items())
+                label_names = [label for index, label in sorted_labels]
+                target_labels_for_report = [index for index, label in sorted_labels] # Should be 0 to N-1
+
+        except Exception as e:
+            print(f"Plotter Warning: Error processing int_to_label mapping ({e}). Using integer indices as names.")
+            label_names = [str(i) for i in range(true_labels.shape[1])]
+            target_labels_for_report = list(range(true_labels.shape[1]))
+
     try:
+        # Generate classification report for multi-label
+        # true_labels and predictions should be indicator matrices (multi-hot)
         report_str = classification_report(
             true_labels,
             predictions,
-            labels=target_labels_for_report,
             target_names=label_names,
-            zero_division=0,
+            zero_division=0, # Handle classes with no samples/predictions
             digits=4
+            # Note: classification_report will compute per-class P/R/F1 and micro/macro/weighted averages
         )
-        title = f"{prefix} Classification Report" if prefix else "Classification Report"
-        accuracy = np.mean(np.array(true_labels) == np.array(predictions))
+
+        title = f"{prefix} Multi-Label Classification Report" if prefix else "Multi-Label Classification Report"
+
+        # Calculate overall subset accuracy
+        # Subset accuracy is the strict metric: prediction must match all true labels exactly
+        subset_accuracy = accuracy_score(true_labels, predictions)
+
+
         full_report_output = f"\n--- {title} ---\n"
-        full_report_output += f"Overall Accuracy: {accuracy:.4f}\n\n"
+        full_report_output += f"Overall Subset Accuracy: {subset_accuracy:.4f}\n\n"
         full_report_output += report_str
         full_report_output += "\n-----------------------------------\n"
+
         print(full_report_output)
+
         if report_path:
             try:
                 os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -149,35 +212,13 @@ def generate_classification_analysis(true_labels, predictions, int_to_label, rep
                 print(f"Classification report saved to {report_path}")
             except Exception as e:
                 print(f"Plotter Error: Could not save classification report to {report_path}. Error: {e}")
+
     except Exception as e:
         print(f"Plotter Error: Could not generate classification report. Error: {e}")
-        import traceback
-        traceback.print_exc()
-    if cm_path:
-        try:
-            cm = confusion_matrix(true_labels, predictions, labels=target_labels_for_report)
-            fig_width = max(8, len(label_names) * 0.7)
-            fig_height = max(6, len(label_names) * 0.6)
-            plt.figure(figsize=(fig_width, fig_height))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=label_names, yticklabels=label_names,
-                        annot_kws={"size": 10})
-            plt.xlabel('Predicted Label', fontsize=12)
-            plt.ylabel('True Label', fontsize=12)
-            cm_title = f"{prefix} Confusion Matrix" if prefix else "Confusion Matrix"
-            plt.title(cm_title, fontsize=14)
-            plt.xticks(rotation=45, ha='right', fontsize=10)
-            plt.yticks(rotation=0, fontsize=10)
-            plt.tight_layout(pad=1.5)
-            os.makedirs(os.path.dirname(cm_path), exist_ok=True)
-            plt.savefig(cm_path, bbox_inches='tight')
-            print(f"Confusion matrix plot saved to {cm_path}")
-            plt.close()
-        except ValueError as e:
-             print(f"Plotter Error: Could not generate confusion matrix, possibly due to label mismatch or empty data. Error: {e}")
-        except Exception as e:
-            print(f"Plotter Error: Could not generate or save confusion matrix plot. Error: {e}")
-            import traceback
-            traceback.print_exc()
-    elif report_path:
-        print("Plotter Info: Confusion matrix path not specified. Matrix plot not saved.")
+        import traceback; traceback.print_exc();
+
+    # --- Confusion Matrix (SKIP for Multi-Label) ---
+    if cm_path: # This condition will be False due to cm_path=None above
+        print("Plotter Info: Skipping confusion matrix plot as it's not directly applicable to multi-label classification.")
+        # If you needed *per-class* binary CMs, you would iterate through each label.
+        # This is beyond the scope of a standard CM function.
