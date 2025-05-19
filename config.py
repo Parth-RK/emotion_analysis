@@ -51,7 +51,7 @@ BEST_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, BEST_MODEL_FILENAME) # Full path 
 
 # Global label map path (should be consistent across runs for a specific dataset)
 # This JSON file should contain the mapping for all 28 GoEmotions labels.
-LABEL_MAP_FILENAME = "label_map.json" # Standard filename for label map
+LABEL_MAP_FILENAME = "go_label.json" # Standard filename for label map
 LABEL_MAP_PATH = os.path.join(ARTIFACTS_DIR, LABEL_MAP_FILENAME) # Path to the GoEmotions label map
 
 # Model-specific output files (inside model type dir)
