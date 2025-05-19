@@ -164,14 +164,15 @@ def load_raw_data(filepath, file_format=config.INPUT_FILE_FORMAT, text_col_idx=c
     try:
         # pandas read_csv handles tsv if sep='\t'
         read_opts = {'on_bad_lines': 'warn', 'low_memory': False}
+        usecols = [label_col_idx, text_col_idx]  # Only import 0th and 1st columns
         if file_format == "csv":
             header = 0 if has_header else None
             names = None if has_header else col_names
-            df = pd.read_csv(filepath, header=header, names=names, **read_opts)
+            df = pd.read_csv(filepath, header=header, names=names, usecols=usecols, **read_opts)
         elif file_format == "tsv":
             header = 0 if has_header else None
             names = None if has_header else col_names
-            df = pd.read_csv(filepath, sep='\t', header=header, names=names, **read_opts)
+            df = pd.read_csv(filepath, sep='\t', header=header, names=names, usecols=usecols, **read_opts)
         elif file_format == "jsonl":
              # For JSONL, col_names are the keys in JSON objects
              # We assume keys are 'text' and 'labels' (list of strings)
