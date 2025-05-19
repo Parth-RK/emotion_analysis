@@ -3,6 +3,7 @@ import torch
 import os
 import sys
 import numpy as np
+import torch.nn as nn # Import nn for criterion
 
 # Import necessary modules from the project
 try:
@@ -27,11 +28,10 @@ def run_training_pipeline():
 
     # --- 1. Data Loading and Preparation ---
     try:
-        # get_data_pipeline now handles loading, splitting, multi-hot encoding,
-        # and returns multi-hot processed dataframes and the fixed label map.
+        # get_data_pipeline now returns pos_weight_np
         train_loader, val_loader, test_loader, \
         label_to_int, int_to_label, n_classes, \
-        tokenizer = data_handler.get_data_pipeline() # Returns tokenizer instead of vocab_size
+        tokenizer, pos_weight_np = data_handler.get_data_pipeline() # Added pos_weight_np
 
         if train_loader is None:
             print("Error: Training DataLoader is None after data pipeline. Cannot proceed.")
@@ -104,9 +104,23 @@ def run_training_pipeline():
         import traceback; traceback.print_exc();
         sys.exit(1)
 
-
-    # --- 4. Training ---
+    # --- 4. Initialize Criterion (Loss Function) with pos_weight ---
+    # BCEWithLogitsLoss for multi-label
+    # Pass the calculated pos_weight to address class imbalance
     try:
+        pos_weight_tensor = torch.tensor(pos_weight_np, device=config.DEVICE)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+        print(f"\nInitialized Loss Function: {type(criterion).__name__} with pos_weight on {config.DEVICE}")
+        # print(f"Pos Weight Tensor: {pos_weight_tensor}") # Optional: print tensor
+    except Exception as e:
+        print(f"\nCRITICAL Error initializing criterion with pos_weight: {e}")
+        print("Ensure pos_weight_np is a valid numpy array of floats with size matching n_classes.")
+        sys.exit(1)
+
+
+    # --- 5. Training ---
+    try:
+        # Pass the initialized criterion to the training engine
         history = engine.train_model(
             model=model,
             train_loader=train_loader,
@@ -116,6 +130,7 @@ def run_training_pipeline():
             device=config.DEVICE,
             epochs=config.EPOCHS,
             model_save_path=config.BEST_MODEL_PATH, # Uses fixed path from config
+            criterion=criterion, # Pass the criterion
             metric_for_best=config.METRIC_FOR_BEST_MODEL # Uses metric from config
         )
     except Exception as e:
@@ -124,7 +139,7 @@ def run_training_pipeline():
         sys.exit(1) # Exit on training failure
 
 
-    # --- 5. Plot Training History ---
+    # --- 6. Plot Training History ---
     if config.PLOT_TRAINING_HISTORY and history:
         print("\n--- Plotting Training History ---")
         try:
@@ -135,7 +150,7 @@ def run_training_pipeline():
         print("\nSkipping training plot: History unavailable.")
 
 
-    # --- 6. Final Evaluation on Test Set ---
+    # --- 7. Final Evaluation on Test Set ---
     print("\n--- Evaluating on Test Set ---")
     if test_loader is None or len(test_loader) == 0:
         print("Test DataLoader is None or empty. Skipping final test evaluation.")
@@ -150,8 +165,10 @@ def run_training_pipeline():
             )
             # Model is automatically set to .eval() in load_trained_model
 
-            # Perform evaluation on the test set
-            test_metrics = engine.evaluate_step(best_model, test_loader, config.DEVICE)
+            # Perform evaluation on the test set - pass the criterion
+            # Note: pos_weight in criterion does NOT affect evaluation metrics,
+            # but the evaluate_step function calculates loss using the criterion for logging.
+            test_metrics = engine.evaluate_step(best_model, test_loader, config.DEVICE, criterion)
 
             print("\n--- Test Set Performance (Best Model) ---")
             # Print multi-label specific metrics
@@ -162,7 +179,7 @@ def run_training_pipeline():
             print(f"  Test F1-Score (W):      {test_metrics.get('f1_weighted', 0.0):.4f}")
             print("-------------------------------------------")
 
-            # --- 7. Generate Test Report & Confusion Matrix ---
+            # --- 8. Generate Test Report & Confusion Matrix ---
             # generate_classification_analysis now handles multi-label report and skips CM plot
             if (config.GENERATE_TEST_REPORT or config.GENERATE_CONFUSION_MATRIX) and \
                'predictions' in test_metrics and 'true_labels' in test_metrics:

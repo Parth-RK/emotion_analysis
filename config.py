@@ -4,7 +4,8 @@ import os
 import json
 from pathlib import Path
 import inspect # For saving config
-import sys
+import sys # For accessing sys.modules
+
 # --- Core Settings ---
 SEED = 42
 # Use CUDA if available, otherwise CPU
@@ -15,13 +16,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_TYPE = 'Transformer'
 
 # --- Data Configuration ---
-DATA_DIR = "data/goemotions" # Directory where data files are stored
+DATA_DIR = "data" # Directory where data files are stored
 # Specify your GoEmotions file paths here
-TRAIN_FILE = "train.tsv" # Example TSV train file name
+TRAIN_FILE = "goemotions/train.tsv" # Example TSV train file name
 TRAIN_FILE_PATH = os.path.join(DATA_DIR, TRAIN_FILE)
-VALID_FILE = "dev.tsv" # Example TSV validation file name
+VALID_FILE = "goemotions/dev.tsv" # Example TSV validation file name
 VALID_FILE_PATH = os.path.join(DATA_DIR, VALID_FILE) if VALID_FILE else None
-TEST_FILE = "test.tsv" # Example TSV test file name
+TEST_FILE = "goemotions/test.tsv" # Example TSV test file name
 TEST_FILE_PATH = os.path.join(DATA_DIR, TEST_FILE) if TEST_FILE else None
 
 # Configuration for loading the data file(s)
@@ -77,7 +78,7 @@ TRANSFORMER_MODEL_NAME = "nreimers/MiniLM-L6-H384-uncased"
 MAX_LEN = 128 # Maximum token length for input sequences
 TRAIN_BATCH_SIZE = 32
 VALID_BATCH_SIZE = 64
-EPOCHS = 4
+EPOCHS = 8 # Increased epochs as suggested for multi-label
 LEARNING_RATE = 2e-5
 WEIGHT_DECAY = 0.01
 OPTIMIZER_TYPE = 'AdamW' # AdamW is standard for Transformers
@@ -93,6 +94,8 @@ GENERATE_CONFUSION_MATRIX = True # Generate confusion matrix plot (NOTE: Skipped
 # For multi-label, 'f1_weighted' is a common choice. 'loss' is also valid.
 METRIC_FOR_BEST_MODEL = 'f1_weighted' # Options: 'loss', 'accuracy', 'f1_weighted', 'precision_weighted', 'recall_weighted'
 PREDICTION_THRESHOLD = 0.5 # Threshold for converting sigmoid probabilities to binary predictions during evaluation/inference
+# Consider adding SCHEDULER_MONITOR if using reduce_on_plateau, defaults to 'loss' in engine
+# SCHEDULER_MONITOR = 'loss'
 
 # --- Inference App Configuration ---
 APP_PORT = 7860 # Port for the Gradio web application
@@ -113,11 +116,17 @@ def save_run_config(filepath=RUN_CONFIG_PATH):
                 elif isinstance(obj, (list, tuple)):
                      # Try to convert elements within lists/tuples
                      config_vars[name] = [str(i) if isinstance(i, Path) else i for i in obj]
-                elif isinstance(obj, (str, int, float, bool, type(None))):
-                     config_vars[name] = obj
                 elif isinstance(obj, dict):
                      # Recursively handle dictionaries (simple conversion)
                      config_vars[name] = {k: (str(v) if isinstance(v, Path) else v) for k, v in obj.items()}
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                     config_vars[name] = obj
+                elif isinstance(obj, np.ndarray):
+                     # Handle numpy arrays by converting to list
+                     config_vars[name] = obj.tolist()
+                elif isinstance(obj, (np.integer, np.floating, np.bool_)):
+                    # Handle single numpy numbers
+                    config_vars[name] = to_native_type(obj)
                 else:
                      # Fallback for other types, might fail but try converting to string
                      config_vars[name] = str(obj)
@@ -135,6 +144,14 @@ def save_run_config(filepath=RUN_CONFIG_PATH):
             json.dump(config_vars, f, indent=4, ensure_ascii=False)
     except Exception as e:
         print(f"Warning: Could not save run configuration to {filepath}. Error: {e}")
+
+# Helper function used by save_run_config (copy from data_handler or define locally)
+def to_native_type(item):
+    """Converts numpy types for JSON serialization."""
+    if isinstance(item, np.integer): return int(item)
+    elif isinstance(item, np.floating): return float(item)
+    elif isinstance(item, np.bool_): return bool(item)
+    return item # Return item unchanged for other types
 
 # --- Print Summary ---
 # Print key configuration settings when the module is loaded

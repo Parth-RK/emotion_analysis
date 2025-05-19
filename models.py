@@ -39,8 +39,7 @@ class TransformerClassifier(nn.Module):
         try:
             print(f"Loading Transformer config: {model_name} for {n_classes} output classes")
             # AutoConfig can often infer settings like hidden_size from the model name.
-            # We don't pass num_labels here, as the final classification layer is separate.
-            # We might load a config trained for N labels, but we build our own head.
+            # We don't *need* to pass num_labels here for our custom head, but it's good info.
             self.config = AutoConfig.from_pretrained(model_name)
             # Optionally, set num_labels in the config if needed by the base model itself
             # (e.g., if using a built-in classification head, which we are not).
@@ -52,6 +51,9 @@ class TransformerClassifier(nn.Module):
 
             print(f"Loading Transformer model: {model_name}")
             # Load the base transformer model without the classification head
+            # Some models might load weights for a classification head if available,
+            # but loading the base model via AutoModel should ideally skip this,
+            # or our subsequent load_state_dict will overwrite it.
             self.transformer = AutoModel.from_pretrained(model_name, config=self.config)
             print("  Transformer model loaded.")
 
@@ -73,6 +75,7 @@ class TransformerClassifier(nn.Module):
         clf_dropout = getattr(self.config, 'classifier_dropout', None)
         hidden_dropout = getattr(self.config, 'hidden_dropout_prob', None)
 
+        dropout_prob = 0.1 # Common default value
         if clf_dropout is not None:
             dropout_prob = clf_dropout
             print(f"  Using classifier_dropout from config: {dropout_prob:.2f}")
@@ -80,8 +83,8 @@ class TransformerClassifier(nn.Module):
             dropout_prob = hidden_dropout
             print(f"  Using hidden_dropout_prob from config: {dropout_prob:.2f}")
         else:
-            dropout_prob = 0.1 # Common default value
-            print(f"  Using default dropout probability: {dropout_prob:.2f}")
+             print(f"  Using default dropout probability: {dropout_prob:.2f}")
+
 
         # Ensure dropout_prob is a valid number
         if not isinstance(dropout_prob, (float, int)):

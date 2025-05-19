@@ -40,6 +40,17 @@ def load_run_config(model_type_dir):
              PREPROCESSOR_TYPE = getattr(config, 'PREPROCESSOR_TYPE', 'basic')
              TRANSFORMER_MODEL_NAME = config.TRANSFORMER_MODEL_NAME
              PREDICTION_THRESHOLD = getattr(config, 'PREDICTION_THRESHOLD', 0.5) # Added threshold for app
+             # Add other relevant config items used by the app if needed, e.g., APP_PORT
+
+             def __getattr__(self, name):
+                 # Allows accessing attributes that weren't explicitly set,
+                 # falling back to the original config module if they exist there.
+                 # Be cautious with this - could mask missing attributes.
+                 if hasattr(config, name):
+                     return getattr(config, name)
+                 raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+
         return DefaultRunConfig()
 
     try:
@@ -65,6 +76,9 @@ def load_run_config(model_type_dir):
                 if not hasattr(self, 'PREDICTION_THRESHOLD'): # Load threshold used during training/eval if saved
                     print("Warning: Loaded config missing PREDICTION_THRESHOLD. Using global default 0.5.")
                     self.PREDICTION_THRESHOLD = 0.5
+                # Ensure other potentially used configs from the original config are available
+                if not hasattr(self, 'APP_PORT'): self.APP_PORT = config.APP_PORT
+                # Add other config items from original config here if needed by the app
 
 
         print(f"Loaded run configuration from {config_path}")
@@ -87,6 +101,14 @@ def load_run_config(model_type_dir):
              PREPROCESSOR_TYPE = getattr(config, 'PREPROCESSOR_TYPE', 'basic')
              TRANSFORMER_MODEL_NAME = config.TRANSFORMER_MODEL_NAME
              PREDICTION_THRESHOLD = getattr(config, 'PREDICTION_THRESHOLD', 0.5)
+             APP_PORT = config.APP_PORT # Include app port
+
+             def __getattr__(self, name):
+                 if hasattr(config, name):
+                     return getattr(config, name)
+                 raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+
         return DefaultRunConfig()
 
 
@@ -103,33 +125,41 @@ def load_prediction_artifacts(model_type_dir):
     model_name = run_cfg.TRANSFORMER_MODEL_NAME
     model_type = run_cfg.MODEL_TYPE # Should be 'Transformer'
     max_len = run_cfg.MAX_LEN
-    prediction_threshold = run_cfg.PREDICTION_THRESHOLD
+    # Prediction threshold is used in evaluate_step for metrics, but sigmoid outputs are shown in app
 
     # 2. Load Label Mappings
     # For GoEmotions, the label map should be a fixed 28-class map saved during training
-    label_to_int, int_to_label = data_handler.load_label_mappings(config.LABEL_MAP_PATH)
+    label_map_path = getattr(run_cfg, 'LABEL_MAP_PATH', config.LABEL_MAP_PATH) # Use path from loaded config if available, else global
+    label_to_int, int_to_label = data_handler.load_label_mappings(label_map_path)
 
     if not int_to_label or not label_to_int:
-        print(f"CRITICAL ERROR: Label map not found or empty at {config.LABEL_MAP_PATH}. Cannot determine classes.")
+        print(f"CRITICAL ERROR: Label map not found or empty at {label_map_path}. Cannot determine classes and label names.")
         # Attempt to infer n_classes from model config as a last resort, but map is needed for names
         n_classes = 0
         try:
             print("Attempting to infer n_classes from Transformer config...")
+            # Use model_name from loaded config
             model_hf_config = HfAutoConfig.from_pretrained(model_name)
             # Check standard attributes for num_labels
             inferred_n_classes = getattr(model_hf_config, 'num_labels', None)
-            if inferred_n_classes is None:
+
+            if inferred_n_classes is None or inferred_n_classes <= 1:
                  # Some base configs might not have num_labels set if no head was used
                  # Try getting the size of the dummy head if we were training from this config
                  # This is a heuristic and might fail if the model name points to a non-standard config
-                 print("  'num_labels' not found in base config. Trying a heuristic...")
+                 print(f"  'num_labels' not found or <= 1 in base config ({inferred_n_classes}). Trying heuristic...")
                  try:
-                     dummy_model = engine.initialize_model(model_type, 100) # Initialize with arbitrary large number
-                     inferred_n_classes = dummy_model.classifier.out_features # Get output size of the classifier head
-                     del dummy_model # Clean up
+                     # Temporarily initialize a model just to get the classifier output size
+                     # Need to use a placeholder n_classes first, then get the *actual* size if successful
+                     temp_model_for_size = engine.initialize_model(model_type, 100) # Arbitrary number >= expected
+                     inferred_n_classes = temp_model_for_size.classifier.out_features # Get output size of the classifier head
+                     # Clean up the temporary model to free memory
+                     del temp_model_for_size
+                     torch.cuda.empty_cache() # Clear CUDA cache if using GPU
+
                  except Exception as dummy_err:
                      print(f"  Heuristic failed: {dummy_err}. Cannot infer n_classes.")
-                     inferred_n_classes = 0
+                     inferred_n_classes = 0 # Set to 0 if heuristic fails
 
 
             if inferred_n_classes is not None and inferred_n_classes > 1:
@@ -140,7 +170,7 @@ def load_prediction_artifacts(model_type_dir):
                  label_to_int = {v: k for k, v in int_to_label.items()}
                  print("  Using integer labels as text map is missing.")
             else:
-                 print("  Failed to infer n_classes from config. Cannot load model.")
+                 print("  Failed to infer n_classes from config or model. Cannot load model.")
                  return None, None, None, None, None
         except Exception as infer_e:
               print(f"Error: Failed to determine n_classes from label map or model config ({infer_e}). Cannot load model.")
@@ -183,9 +213,9 @@ def load_prediction_artifacts(model_type_dir):
     # We only support 'basic' which now handles emojis
     if run_cfg.PREPROCESSOR_TYPE == 'basic':
          preprocessor = data_handler.BasicTextCleaner()
-         print(f"Using preprocessor: BasicTextCleaner")
+         print(f"Using preprocessor: BasicTextCleaner (with emoji handling)")
     else:
-         print(f"Warning: Unknown preprocessor type '{run_cfg.PREPROCESSOR_TYPE}' from config. Using BasicTextCleaner.")
+         print(f"Warning: Unknown preprocessor type '{run_cfg.PREPROCESSOR_TYPE}' from config. Using BasicTextCleaner (with emoji handling).")
          preprocessor = data_handler.BasicTextCleaner()
 
 
@@ -201,11 +231,14 @@ class EmotionPredictor:
         self.tokenizer = tokenizer
         self.preprocessor = preprocessor
         self.int_to_label = int_to_label if int_to_label else {} # Ensure it's a dict
-        self.label_names = [self.int_to_label.get(i, f"Label_{i}") for i in sorted(self.int_to_label.keys())] # Sorted label names
+        # Create a sorted list of label names based on integer keys
+        # This ensures the order matches the model's output layer which is 0..n-1
+        self.label_names = [self.int_to_label.get(i, f"Label_{i}") for i in sorted(self.int_to_label.keys())]
         self.run_config = run_config
-        self.device = getattr(config, 'DEVICE', 'cpu') # Use device from config if available
+        # Use device from config or loaded config if available
+        self.device = getattr(run_config, 'DEVICE', getattr(config, 'DEVICE', 'cpu'))
         self.max_len = getattr(run_config, 'MAX_LEN', config.MAX_LEN) # Get MAX_LEN from loaded config
-        self.prediction_threshold = getattr(run_config, 'PREDICTION_THRESHOLD', 0.5) # Get threshold from loaded config
+        # Prediction threshold is NOT used here, we output probabilities
 
         # Move model to device and set to eval mode
         try:
@@ -220,7 +253,7 @@ class EmotionPredictor:
         print("\nEmotionPredictor initialized.")
         print(f"Model MAX_LEN: {self.max_len}")
         print(f"Number of classes: {len(self.int_to_label) if self.int_to_label else 'N/A (map missing)'}")
-        print(f"Prediction Threshold (for binary interpretation, not used in output): {self.prediction_threshold}")
+        # No prediction threshold printed here as we output probabilities
 
 
     def _preprocess_input(self, text):
@@ -261,13 +294,9 @@ class EmotionPredictor:
                 )
 
                 # Move tensors to the correct device and squeeze batch dimension
-                input_ids = encoding['input_ids'].squeeze(0).to(self.device)
-                attention_mask = encoding['attention_mask'].squeeze(0).to(self.device)
-
-                # Ensure tensors have a batch dimension of 1 for the model
-                input_ids = input_ids.unsqueeze(0)
-                attention_mask = attention_mask.unsqueeze(0)
-
+                # Unsqueeze to add batch dimension = 1
+                input_ids = encoding['input_ids'].to(self.device).unsqueeze(0)
+                attention_mask = encoding['attention_mask'].to(self.device).unsqueeze(0)
 
                 model_input = {'input_ids': input_ids, 'attention_mask': attention_mask}
 
@@ -292,13 +321,14 @@ class EmotionPredictor:
             if self.int_to_label and num_outputs != len(self.int_to_label):
                  print(f"Warning: Model output size ({num_outputs}) mismatches loaded label map size ({len(self.int_to_label)}). Mapping might be incorrect.")
                  print("Falling back to integer labels for output dictionary keys.")
-                 self.int_to_label = {i: f"Label_{i}" for i in range(num_outputs)} # Create dummy map
-                 self.label_names = [f"Label_{i}" for i in range(num_outputs)] # Update label names
+                 # Create dummy map and label names based on model output size
+                 self.int_to_label = {i: f"Label_{i}" for i in range(num_outputs)}
+                 self.label_names = [f"Label_{i}" for i in range(num_outputs)]
 
 
             # Populate results dictionary with label names and probabilities
             if self.int_to_label:
-                 # Use sorted keys to match the order expected by the model output layer
+                 # Use sorted keys to match the order expected by the model output layer (0 to n-1)
                  sorted_label_indices = sorted(self.int_to_label.keys())
                  if len(sorted_label_indices) == num_outputs:
                       for i in range(num_outputs):
@@ -317,6 +347,7 @@ class EmotionPredictor:
                  for i in range(num_outputs):
                     results_dict[f"Label_{i}"] = float(probabilities_np[i])
 
+            # Gradio's gr.Label automatically sorts by probability descending when given a dictionary
             return results_dict
 
         except Exception as e:
@@ -443,7 +474,14 @@ else:
 
 
 if __name__ == "__main__":
-    launch_port = getattr(config, 'APP_PORT', 7860) # Get port from config
+    # Added argparse to allow specifying port from command line
+    # This is useful if default port is in use
+    arg_parser = argparse.ArgumentParser(description="Run the Gradio web application.")
+    arg_parser.add_argument("--port", type=int, default=getattr(config, 'APP_PORT', 7860), help="Port to run the Gradio server on.")
+    app_args = arg_parser.parse_args()
+    launch_port = app_args.port
+
+
     try:
         print(f"Launching Gradio interface on port {launch_port}...")
         # Use share=True to get a public link (useful for demos)
@@ -451,7 +489,7 @@ if __name__ == "__main__":
         interface.launch(server_port=launch_port, share=True)
     except OSError as e:
         print(f"Error: Port {launch_port} already in use or blocked.")
-        print(f"Please try a different port, e.g., python app.py --port XXXX (requires argparse in app.py main block).")
+        print(f"Please try a different port using the --port command line argument, e.g., python app.py --port 8000.")
         print("Or modify config.py APP_PORT.")
         sys.exit(1)
     except Exception as e:

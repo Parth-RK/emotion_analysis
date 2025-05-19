@@ -71,15 +71,24 @@ def initialize_optimizer_scheduler(model, optimizer_type, scheduler_type, num_tr
     optimizer = None
     if optimizer_type == 'AdamW':
         # AdamW is commonly used with Transformers
+        # Filter parameters to apply weight decay selectively
         no_decay = ["bias", "LayerNorm.weight", "LayerNorm.bias"]
         optimizer_grouped_parameters = [
             {'params': [p for n, p in model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)], 'weight_decay': wd},
             {'params': [p for n, p in model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
-        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+        # Check if any parameters are actually included before creating optimizer
+        if not optimizer_grouped_parameters[0]['params'] and not optimizer_grouped_parameters[1]['params']:
+             print("Warning: No trainable parameters found in model.")
+             optimizer = torch.optim.AdamW([{'params': model.parameters(), 'weight_decay': 0.0}], lr=lr) # Create dummy optimizer
+        else:
+             optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+
         print(f"  Using AdamW with LR={lr}, Weight Decay={wd} (applied selectively)")
     elif optimizer_type == 'Adam':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=wd)
+        # Filter for parameters that require gradients
+        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+        optimizer = optim.Adam(trainable_params, lr=lr, weight_decay=wd)
         print(f"  Using Adam with LR={lr}, Weight Decay={wd}")
     else:
         raise ValueError(f"Unsupported OPTIMIZER_TYPE: {optimizer_type}")
@@ -110,14 +119,11 @@ def initialize_optimizer_scheduler(model, optimizer_type, scheduler_type, num_tr
     return optimizer, scheduler
 
 
-# --- Loss Function for Multi-Label ---
-# BCEWithLogitsLoss is suitable for multi-label classification.
-# It combines Sigmoid and Binary Cross Entropy, processing each output neuron independently.
-criterion = nn.BCEWithLogitsLoss()
-print(f"\nUsing Loss Function: {type(criterion).__name__} (for multi-label)")
+# --- Criterion will now be initialized in train.py and passed ---
+# Removing global criterion = nn.BCEWithLogitsLoss()
 
 
-def train_step(model, data_loader, optimizer, device, scheduler=None, grad_clip_value=None):
+def train_step(model, data_loader, optimizer, device, criterion, scheduler=None, grad_clip_value=None):
     """Performs one training epoch."""
     model.train()
     total_loss = 0.0
@@ -141,18 +147,14 @@ def train_step(model, data_loader, optimizer, device, scheduler=None, grad_clip_
         except KeyError as e:
              print(f"\nError: Missing key {e} in training batch {batch_idx}. Check Dataset __getitem__.")
              print(f"Batch keys: {batch.keys()}")
-             # Skip batch or raise error
-             # continue # Option 1: skip batch (might cause issues with scheduler/metrics)
-             raise # Option 2: raise error (cleaner halt)
+             raise # Raise error for critical data issue
         except Exception as e:
              print(f"\nError during forward pass in training batch {batch_idx}: {e}")
              # Print shapes for debugging input errors
              print(f"Input Shapes: ids={input_ids.shape if 'input_ids' in batch else 'N/A'}, mask={attention_mask.shape if 'attention_mask' in batch else 'N/A'}, labels={labels.shape if 'labels' in batch else 'N/A'}")
-             # Skip batch or raise error
-             # continue
-             raise
+             raise # Raise error for critical model/data issue
 
-        # Calculate loss using BCEWithLogitsLoss
+        # Calculate loss using the passed criterion (BCEWithLogitsLoss with pos_weight)
         # Expected: outputs (logits float [batch_size, n_classes]), labels (multi-hot float [batch_size, n_classes])
         loss = criterion(outputs, labels)
 
@@ -182,27 +184,38 @@ def train_step(model, data_loader, optimizer, device, scheduler=None, grad_clip_
     return avg_loss
 
 
-def evaluate_step(model, data_loader, device):
+def evaluate_step(model, data_loader, device, criterion):
     """Performs evaluation on a data loader for multi-label classification."""
     if data_loader is None or len(data_loader) == 0:
         print("  Evaluation skipped: DataLoader is empty or None.")
-        # Return NaN loss and 0 for other metrics for consistency
+        # Determine number of classes for empty arrays if possible
+        num_classes_from_data = 0
+        if data_loader and data_loader.dataset and len(data_loader.dataset) > 0:
+             try:
+                  # Access shape from the first item in the dataset
+                  num_classes_from_data = data_loader.dataset[0]['labels'].shape[0]
+             except Exception:
+                  pass # Cannot determine, leave as 0
+
+
         return {'loss': float('nan'), 'accuracy': 0.0, 'precision_weighted': 0.0,
                 'recall_weighted': 0.0, 'f1_weighted': 0.0,
-                'predictions': np.array([]).reshape(0, len(data_loader.dataset[0]['labels'])), # Return empty numpy array of correct shape
-                'true_labels': np.array([]).reshape(0, len(data_loader.dataset[0]['labels']))} # Assume labels structure from first item
+                'predictions': np.array([]).reshape(0, num_classes_from_data), # Return empty numpy array of correct shape
+                'true_labels': np.array([]).reshape(0, num_classes_from_data)} # Assume labels structure from first item
+
 
     model.eval()
     total_loss = 0.0
-    all_preds = [] # To store binary predictions (numpy arrays)
-    all_labels = [] # To store true multi-hot labels (numpy arrays)
+    all_preds_binary = [] # To store binary predictions (numpy arrays)
+    all_labels_multihot = [] # To store true multi-hot labels (numpy arrays)
 
     start_time = time.time()
     progress_bar = tqdm(data_loader, desc="Evaluating", leave=False, unit="batch")
 
-    # Sigmoid activation for probabilities
+    # Sigmoid activation for probabilities - needed *after* getting logits
     sigmoid = torch.nn.Sigmoid()
-    prediction_threshold = getattr(config, 'PREDICTION_THRESHOLD', 0.5) # Default threshold 0.5
+    # Use the prediction threshold from config for converting probabilities to binary predictions
+    prediction_threshold = getattr(config, 'PREDICTION_THRESHOLD', 0.5)
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress_bar):
@@ -219,15 +232,16 @@ def evaluate_step(model, data_loader, device):
             except KeyError as e:
                  print(f"\nError: Missing key {e} in evaluation batch {batch_idx}. Check Dataset __getitem__.")
                  print(f"Batch keys: {batch.keys()}")
-                 # continue
                  raise
             except Exception as e:
                  print(f"\nError during forward pass in evaluation batch {batch_idx}: {e}")
                  print(f"Input Shapes: ids={input_ids.shape if 'input_ids' in batch else 'N/A'}, mask={attention_mask.shape if 'attention_mask' in batch else 'N/A'}, labels={labels.shape if 'labels' in batch else 'N/A'}")
-                 # continue
                  raise
 
-            # Calculate loss (for logging, not backprop)
+            # Calculate loss (for logging, not backprop). Use the passed criterion.
+            # Note: pos_weight in criterion *only* affects the training loss calculation.
+            # Evaluation loss is calculated the same way, but pos_weight doesn't change the eval metric values themselves.
+            # We calculate loss here just to monitor it.
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -236,8 +250,8 @@ def evaluate_step(model, data_loader, device):
             preds_binary = (probs > prediction_threshold).int() # Convert to int (0 or 1)
 
             # Store predictions and true labels (move to CPU and convert to numpy)
-            all_preds.append(preds_binary.cpu().numpy())
-            all_labels.append(labels.cpu().numpy()) # labels were already float, now on cpu
+            all_preds_binary.append(preds_binary.cpu().numpy())
+            all_labels_multihot.append(labels.cpu().numpy()) # labels were already float, now on cpu
 
             progress_bar.set_postfix({'avg_loss': f'{total_loss / (batch_idx + 1):.4f}'})
 
@@ -245,14 +259,20 @@ def evaluate_step(model, data_loader, device):
     avg_loss = total_loss / len(data_loader)
 
     # Concatenate all batch results
-    if all_preds and all_labels:
-        all_preds_np = np.vstack(all_preds)
-        all_labels_np = np.vstack(all_labels)
+    if all_preds_binary and all_labels_multihot:
+        all_preds_np = np.vstack(all_preds_binary)
+        all_labels_np = np.vstack(all_labels_multihot)
     else:
         # Handle case where data_loader was not empty but no batches were processed (e.g., errors)
         print("Warning: No data processed during evaluation step.")
         # Attempt to get class dim from dataset if available
-        num_classes_from_data = data_loader.dataset[0]['labels'].shape[0] if data_loader.dataset and len(data_loader.dataset) > 0 else 0
+        num_classes_from_data = 0
+        if data_loader and data_loader.dataset and len(data_loader.dataset) > 0:
+             try:
+                  num_classes_from_data = data_loader.dataset[0]['labels'].shape[0]
+             except Exception:
+                  pass
+
         return {'loss': float('nan'), 'accuracy': 0.0, 'precision_weighted': 0.0,
                 'recall_weighted': 0.0, 'f1_weighted': 0.0,
                 'predictions': np.array([]).reshape(0, num_classes_from_data),
@@ -261,7 +281,7 @@ def evaluate_step(model, data_loader, device):
 
     elapsed_time = time.time() - start_time
 
-    # Calculate multi-label metrics
+    # Calculate multi-label metrics using scikit-learn
     accuracy = 0.0 # Subset accuracy
     precision, recall, f1 = 0.0, 0.0, 0.0 # Weighted P/R/F1
 
@@ -271,12 +291,13 @@ def evaluate_step(model, data_loader, device):
             accuracy = accuracy_score(all_labels_np, all_preds_np)
 
             # Weighted metrics: Calculate metrics for each label, then average, weighted by support (# of true instances for each label).
-            precision, recall, f1, _ = precision_recall_fscore_support(
+            # Use all_labels_np (true labels) for support calculation
+            precision, recall, f1, support = precision_recall_fscore_support(
                 all_labels_np, all_preds_np, average='weighted', zero_division=0
             )
-            # You could also calculate micro or macro averages if needed:
-            # precision_micro, recall_micro, f1_micro, _ = precision_recall_fscore_support(all_labels_np, all_preds_np, average='micro', zero_division=0)
-            # precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(all_labels_np, all_preds_np, average='macro', zero_division=0)
+            # If needed, you can also get per-class metrics by removing 'average'
+            # per_class_metrics = precision_recall_fscore_support(all_labels_np, all_preds_np, average=None, zero_division=0)
+
 
         except Exception as e:
             print(f"Warning: Error calculating multi-label metrics using scikit-learn: {e}")
@@ -298,10 +319,9 @@ def evaluate_step(model, data_loader, device):
     return metrics
 
 
-def train_model(model, train_loader, val_loader, optimizer, scheduler, device, epochs, model_save_path, metric_for_best=config.METRIC_FOR_BEST_MODEL):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, device, epochs, model_save_path, criterion, metric_for_best=config.METRIC_FOR_BEST_MODEL):
     """Main training loop."""
     # History dict to store metrics per epoch
-    # Added weighted precision/recall for multi-label
     history = {'train_loss': [], 'val_loss': [], 'val_accuracy': [], 'val_f1_weighted': [], 'val_precision_weighted': [], 'val_recall_weighted': []}
 
     # Initialize best metric value based on the monitoring metric
@@ -325,6 +345,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, e
     print(f"Epochs: {epochs}, Device: {device}")
     print(f"Optimizer: {config.OPTIMIZER_TYPE}, Scheduler: {config.SCHEDULER_TYPE}")
     print(f"Monitoring validation '{metric_for_best}' for best model.")
+    print(f"Using Loss Function: {type(criterion).__name__} (with pos_weight={criterion.pos_weight.cpu().numpy() if hasattr(criterion, 'pos_weight') else 'None'})")
     if grad_clip_value: print(f"Using gradient clipping: {grad_clip_value}")
     print(f"Model checkpoints will be saved to: {model_save_path}")
     print(f"Using Prediction Threshold for metrics: {getattr(config, 'PREDICTION_THRESHOLD', 0.5)}")
@@ -335,18 +356,18 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, e
     for epoch in range(1, epochs + 1):
         print(f"\n--- Epoch {epoch}/{epochs} ---")
 
-        # Train step
-        train_loss = train_step(model, train_loader, optimizer, device, scheduler, grad_clip_value)
+        # Train step - pass the criterion
+        train_loss = train_step(model, train_loader, optimizer, device, criterion, scheduler, grad_clip_value)
         history['train_loss'].append(train_loss)
 
-        # Evaluate step
-        val_metrics = evaluate_step(model, val_loader, device)
+        # Evaluate step - pass the criterion (even though pos_weight doesn't affect eval metrics calculation, loss is calculated for logging)
+        val_metrics = evaluate_step(model, val_loader, device, criterion)
 
         # Store validation metrics
         # Check if evaluation was skipped or failed
         if np.isnan(val_metrics['loss']): # Check loss as a primary indicator of evaluation success
-             print("  Skipping validation metrics recording and best model check due to evaluation failure.")
-             # Append NaNs or skip appending to history? Appending NaNs makes plots look clearer.
+             print("  Skipping validation metrics recording and best model check due to evaluation failure (loss is NaN).")
+             # Append NaNs to history for plotting consistency
              history['val_loss'].append(float('nan'))
              history['val_accuracy'].append(float('nan'))
              history['val_f1_weighted'].append(float('nan'))
@@ -368,7 +389,9 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, e
 
         # Scheduler step (only for ReduceLROnPlateau)
         if scheduler and config.SCHEDULER_TYPE == 'reduce_on_plateau':
-            scheduler.step(val_metrics['loss'])
+            # Scheduler steps based on the monitoring metric, which is usually validation loss
+            monitor_value = val_metrics.get(getattr(config, 'SCHEDULER_MONITOR', 'loss'), val_metrics['loss']) # Default to loss if config not set
+            scheduler.step(monitor_value)
 
 
         # Check for best model based on the monitoring metric
@@ -418,6 +441,7 @@ def load_trained_model(model_path, model_type, n_classes):
         model = initialize_model(model_type, n_classes)
 
         # Load state dictionary
+        # Use map_location to ensure it loads correctly regardless of available devices
         state_dict = torch.load(model_path, map_location=torch.device(config.DEVICE))
 
         # Load state dictionary into the model

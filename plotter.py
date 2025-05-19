@@ -8,6 +8,7 @@ import warnings
 try:
     # Need these for multi-label classification_report
     from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+    # MultiLabelBinarizer is not needed here as we handle multi-hot conversion in data_handler
     from sklearn.preprocessing import MultiLabelBinarizer
 except ImportError:
     classification_report = None
@@ -48,37 +49,43 @@ def plot_training_history(history, save_path=None):
 
     df['epoch'] = range(1, len(df) + 1)
 
-    # Determine which plots to show based on available data
+    # Define plottable metrics (matching keys returned by engine.evaluate_step)
+    # Added precision and recall for multi-label
     plottable_metrics = {
         'loss': {'train': 'train_loss', 'val': 'val_loss', 'title': 'Loss', 'ylim': (None, None)},
-        # These metric names match what evaluate_step returns for multi-label
-        'accuracy': {'train': None, 'val': 'val_accuracy', 'title': 'Accuracy', 'ylim': (0, 1)},
+        'accuracy': {'train': None, 'val': 'val_accuracy', 'title': 'Subset Accuracy', 'ylim': (0, 1)}, # Renamed Accuracy
         'f1': {'train': None, 'val': 'val_f1_weighted', 'title': 'Weighted F1 Score', 'ylim': (0, 1)},
         'precision': {'train': None, 'val': 'val_precision_weighted', 'title': 'Weighted Precision', 'ylim': (0, 1)},
         'recall': {'train': None, 'val': 'val_recall_weighted', 'title': 'Weighted Recall', 'ylim': (0, 1)},
     }
 
-    # Filter for metrics present in the DataFrame
-    active_plots = {k: v for k, v in plottable_metrics.items() if (v['train'] in df.columns and df[v['train']].notna().any()) or (v['val'] in df.columns and df[v['val']].notna().any())}
+    # Filter for metrics present in the DataFrame and having non-NaN values
+    active_plots = {
+        k: v for k, v in plottable_metrics.items()
+        if (v['train'] in df.columns and df[v['train']].notna().any()) or (v['val'] in df.columns and df[v['val']].notna().any())
+    }
 
     if not active_plots:
         print("Plotter Warning: No plottable metrics found in history dict.")
         return
 
     num_plots = len(active_plots)
-    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5), squeeze=False) # squeeze=False ensures axes is always 2D
+    # Calculate figure size based on the number of plots
+    fig_width = max(6, 6 * num_plots) # Ensure min width 6
+    fig_height = 5
+    fig, axes = plt.subplots(1, num_plots, figsize=(fig_width, fig_height), squeeze=False) # squeeze=False ensures axes is always 2D
 
     plot_idx = 0
     for metric_key, cfg in active_plots.items():
         ax = axes[0, plot_idx] # Get the current subplot axis
 
-        has_train = cfg.get('train') and cfg['train'] in df and df[cfg['train']].notna().any()
-        has_val = cfg.get('val') and cfg['val'] in df and df[cfg['val']].notna().any()
+        has_train = cfg.get('train') and cfg['train'] in df.columns and df[cfg['train']].notna().any()
+        has_val = cfg.get('val') and cfg['val'] in df.columns and df[cfg['val']].notna().any()
 
         if has_train:
-            ax.plot(df['epoch'], df[cfg['train']], label=f"Train {cfg['title']}", marker='o', linestyle='-')
+            ax.plot(df['epoch'], df[cfg['train']], label=f"Train {cfg['title']}", marker='o', linestyle='-', markersize=4)
         if has_val:
-            ax.plot(df['epoch'], df[cfg['val']], label=f"Validation {cfg['title']}", marker='x', linestyle='--')
+            ax.plot(df['epoch'], df[cfg['val']], label=f"Validation {cfg['title']}", marker='x', linestyle='--', markersize=4)
 
         ax.set_title(f"{cfg['title']} vs. Epoch")
         ax.set_xlabel('Epoch')
@@ -87,7 +94,7 @@ def plot_training_history(history, save_path=None):
         # Set y-limits if specified
         if cfg['ylim'] is not None:
             y_min, y_max = cfg['ylim']
-            # Adjust limits dynamically if needed, especially for loss
+            # Adjust limits dynamically for loss, especially for better visualization
             if metric_key == 'loss':
                  all_loss_values = []
                  if has_train: all_loss_values.extend(df[cfg['train']].dropna().tolist())
@@ -95,12 +102,12 @@ def plot_training_history(history, save_path=None):
                  if all_loss_values:
                       min_loss = min(all_loss_values)
                       max_loss = max(all_loss_values)
-                      # Add some padding, but prevent negative loss limits
-                      y_min = max(0, min_loss * 0.9) if min_loss >= 0 else min_loss * 1.1 # Adjust for negative possible loss
-                      y_max = max_loss * 1.1 if max_loss >= 0 else max_loss * 0.9
+                      # Add padding, but prevent negative loss limits
+                      ymin_padded = max(0.0, min_loss * 0.95) if min_loss >= 0 else min_loss * 1.05
+                      ymax_padded = max_loss * 1.05 if max_loss >= 0 else max_loss * 0.95
                       # Ensure min < max, handle flat lines
-                      if y_min >= y_max: y_max = y_min + 0.1 # Add minimal range if flat
-                      ax.set_ylim(bottom=y_min, top=y_max)
+                      if ymin_padded >= ymax_padded: ymax_padded = ymin_padded + 0.1 # Add minimal range if flat
+                      ax.set_ylim(bottom=ymin_padded, top=ymax_padded)
             elif y_min is not None or y_max is not None:
                 ax.set_ylim(bottom=y_min, top=y_max)
 
@@ -142,6 +149,7 @@ def generate_classification_analysis(true_labels, predictions, int_to_label, rep
         # Setting cm_path to None to prevent plotting it.
         cm_path = None # Force skip CM plot for multi-label
 
+    # Ensure inputs are numpy arrays and have the same shape
     if not isinstance(true_labels, np.ndarray) or not isinstance(predictions, np.ndarray):
         print("Plotter Error: true_labels and predictions must be numpy arrays (multi-hot format).")
         return
@@ -157,8 +165,10 @@ def generate_classification_analysis(true_labels, predictions, int_to_label, rep
     # Use the loaded int_to_label mapping for target names
     if not int_to_label:
         print("Plotter Warning: int_to_label mapping not provided or empty. Using integer indices as names.")
-        label_names = [str(i) for i in range(true_labels.shape[1])]
-        target_labels_for_report = list(range(true_labels.shape[1])) # Report for all possible indices
+        num_classes = true_labels.shape[1]
+        label_names = [str(i) for i in range(num_classes)]
+        # For reporting, we need the indices corresponding to the columns
+        target_labels_for_report = list(range(num_classes))
     else:
         try:
             # Ensure int_to_label has entries for all columns in true_labels/predictions
@@ -171,12 +181,15 @@ def generate_classification_analysis(true_labels, predictions, int_to_label, rep
                 # Sort labels by index to match column order
                 sorted_labels = sorted(int_to_label.items())
                 label_names = [label for index, label in sorted_labels]
+                # Ensure target_labels for report are the indices 0 to N-1
                 target_labels_for_report = [index for index, label in sorted_labels] # Should be 0 to N-1
 
         except Exception as e:
             print(f"Plotter Warning: Error processing int_to_label mapping ({e}). Using integer indices as names.")
-            label_names = [str(i) for i in range(true_labels.shape[1])]
-            target_labels_for_report = list(range(true_labels.shape[1]))
+            num_classes = true_labels.shape[1]
+            label_names = [str(i) for i in range(num_classes)]
+            target_labels_for_report = list(range(num_classes))
+
 
     try:
         # Generate classification report for multi-label
@@ -186,8 +199,8 @@ def generate_classification_analysis(true_labels, predictions, int_to_label, rep
             predictions,
             target_names=label_names,
             zero_division=0, # Handle classes with no samples/predictions
-            digits=4
-            # Note: classification_report will compute per-class P/R/F1 and micro/macro/weighted averages
+            digits=4,
+            # Multi-label classification_report works directly with indicator matrices
         )
 
         title = f"{prefix} Multi-Label Classification Report" if prefix else "Multi-Label Classification Report"
